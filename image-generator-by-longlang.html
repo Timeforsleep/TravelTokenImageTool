@@ -1,0 +1,4354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Image Generator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+
+:root{
+  color-scheme:dark;
+  --bg:#0d0d12;
+  --bg-secondary:#16161d;
+  --surface:#1c1c26;
+  --surface-elevated:#242430;
+  --border:#2e2e3d;
+  --border-light:#3a3a4f;
+  --text:#f0f0f5;
+  --text-secondary:#a0a0b5;
+  --text-muted:#6b6b80;
+  --accent:#00e5a0;
+  --accent-dim:#00b87d;
+  --accent-glow:rgba(0,229,160,0.15);
+  --danger:#ff6b6b;
+  --success:#34d399;
+  --warning:#fbbf24;
+  --gradient-1:linear-gradient(135deg,#00e5a0 0%,#00b4d8 50%,#9b5de5 100%);
+  --gradient-2:linear-gradient(45deg,#ff6b6b 0%,#feca57 100%);
+  --noise:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  --transition-fast:0.15s cubic-bezier(0.4,0,0.2,1);
+  --transition-smooth:0.3s cubic-bezier(0.4,0,0.2,1);
+  --transition-bounce:0.5s cubic-bezier(0.34,1.56,0.64,1);
+  --shadow-sm:0 2px 8px rgba(0,0,0,0.3);
+  --shadow-md:0 8px 32px rgba(0,0,0,0.4);
+  --shadow-lg:0 16px 64px rgba(0,0,0,0.5);
+  --shadow-glow:0 0 40px var(--accent-glow);
+}
+
+[data-theme="light"]{
+  color-scheme:light;
+  --bg:#fafafa;
+  --bg-secondary:#ffffff;
+  --surface:#ffffff;
+  --surface-elevated:#f5f5f7;
+  --border:#e0e0e5;
+  --border-light:#d0d0d8;
+  --text:#1a1a1f;
+  --text-secondary:#55555f;
+  --text-muted:#888895;
+  --accent:#00b87d;
+  --accent-dim:#009966;
+  --accent-glow:rgba(0,184,125,0.12);
+  --danger:#ff6b6b;
+  --success:#10b981;
+  --warning:#f59e0b;
+  --shadow-sm:0 2px 8px rgba(0,0,0,0.06);
+  --shadow-md:0 8px 32px rgba(0,0,0,0.08);
+  --shadow-lg:0 16px 64px rgba(0,0,0,0.1);
+  --shadow-glow:0 0 60px var(--accent-glow);
+}
+
+html{scroll-behavior:smooth}
+body{
+  font-family:'Space Grotesk',system-ui,sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  min-height:100vh;
+  overflow-x:hidden;
+  transition:background var(--transition-smooth),color var(--transition-smooth);
+}
+
+/* Animated background */
+.bg-canvas{
+  position:fixed;
+  inset:0;
+  z-index:0;
+  overflow:hidden;
+  pointer-events:none;
+}
+.bg-canvas::before{
+  content:'';
+  position:absolute;
+  top:-50%;
+  left:-50%;
+  width:200%;
+  height:200%;
+  background:
+    radial-gradient(ellipse 600px 400px at 20% 30%,var(--accent-glow) 0%,transparent 70%),
+    radial-gradient(ellipse 500px 500px at 80% 70%,rgba(155,93,229,0.08) 0%,transparent 60%),
+    radial-gradient(ellipse 400px 300px at 60% 20%,rgba(0,180,216,0.06) 0%,transparent 50%);
+  animation:bgFloat 20s ease-in-out infinite;
+}
+@keyframes bgFloat{
+  0%,100%{transform:translate(0,0) rotate(0deg)}
+  33%{transform:translate(2%,1%) rotate(1deg)}
+  66%{transform:translate(-1%,2%) rotate(-1deg)}
+}
+.bg-canvas::after{
+  content:'';
+  position:absolute;
+  inset:0;
+  background:var(--noise);
+  opacity:0.5;
+}
+
+/* Grid pattern overlay */
+.grid-overlay{
+  position:fixed;
+  inset:0;
+  z-index:1;
+  pointer-events:none;
+  opacity:0.03;
+  background-image:
+    linear-gradient(var(--text) 1px,transparent 1px),
+    linear-gradient(90deg,var(--text) 1px,transparent 1px);
+  background-size:60px 60px;
+}
+
+.app{
+  position:relative;
+  z-index:2;
+  max-width:1875px;
+  margin:0 auto;
+  padding:24px;
+  display:grid;
+  grid-template-columns:475px 1fr;
+  gap:28px;
+  min-height:100vh;
+}
+@media(max-width:1000px){
+  .app{grid-template-columns:1fr;padding:16px;gap:20px}
+}
+
+/* Panel styling */
+.panel{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:20px;
+  padding:28px;
+  display:flex;
+  flex-direction:column;
+  gap:20px;
+  height:fit-content;
+  position:sticky;
+  top:24px;
+  box-shadow:var(--shadow-md);
+  backdrop-filter:blur(20px);
+  transition:all var(--transition-smooth);
+}
+.panel::before{
+  content:'';
+  position:absolute;
+  inset:0;
+  border-radius:20px;
+  padding:1px;
+  background:linear-gradient(135deg,var(--border-light),transparent 50%);
+  -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  -webkit-mask-composite:xor;
+  mask-composite:exclude;
+  pointer-events:none;
+}
+
+/* Header */
+.panel-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+}
+.panel h1{
+  font-size:1.5rem;
+  font-weight:700;
+  background:var(--gradient-1);
+  -webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;
+  background-clip:text;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  letter-spacing:-0.02em;
+}
+.panel h1::before{
+  content:'';
+  width:10px;
+  height:10px;
+  background:var(--accent);
+  border-radius:2px;
+  -webkit-text-fill-color:initial;
+  animation:logoPulse 2s ease-in-out infinite;
+}
+@keyframes logoPulse{
+  0%,100%{transform:scale(1) rotate(0deg);opacity:1}
+  50%{transform:scale(1.2) rotate(45deg);opacity:0.7}
+}
+
+.brand{
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+}
+.copyright{
+  font-size:0.7rem;
+  color:var(--text-muted);
+  font-weight:400;
+  letter-spacing:0.02em;
+  margin-left:20px;
+}
+
+/* Theme toggle */
+.theme-toggle{
+  position:relative;
+  width:52px;
+  height:28px;
+  background:var(--surface-elevated);
+  border:1px solid var(--border);
+  border-radius:14px;
+  cursor:pointer;
+  transition:all var(--transition-smooth);
+  overflow:hidden;
+}
+.theme-toggle::before{
+  content:'';
+  position:absolute;
+  top:3px;
+  left:3px;
+  width:20px;
+  height:20px;
+  background:var(--gradient-1);
+  border-radius:50%;
+  transition:all var(--transition-bounce);
+  box-shadow:var(--shadow-sm);
+}
+.theme-toggle:hover::before{
+  transform:scale(1.1);
+}
+[data-theme="light"] .theme-toggle::before{
+  left:27px;
+}
+.theme-toggle .icon-sun,.theme-toggle .icon-moon{
+  position:absolute;
+  top:50%;
+  transform:translateY(-50%);
+  width:14px;
+  height:14px;
+  transition:all var(--transition-fast);
+}
+.theme-toggle .icon-moon{
+  left:7px;
+  opacity:1;
+}
+.theme-toggle .icon-sun{
+  right:7px;
+  opacity:0.4;
+}
+[data-theme="light"] .theme-toggle .icon-moon{opacity:0.4}
+[data-theme="light"] .theme-toggle .icon-sun{opacity:1}
+
+/* Form elements */
+.form-group{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+label{
+  font-size:0.8rem;
+  font-weight:600;
+  color:var(--text-secondary);
+  text-transform:uppercase;
+  letter-spacing:0.08em;
+}
+
+input,textarea,select{
+  width:100%;
+  background:var(--surface-elevated);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:14px 16px;
+  color:var(--text);
+  font-family:inherit;
+  font-size:0.95rem;
+  outline:none;
+  transition:all var(--transition-fast);
+}
+input:focus,textarea:focus,select:focus{
+  border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--accent-glow);
+}
+input::placeholder,textarea::placeholder{
+  color:var(--text-muted);
+}
+input[type="number"]{
+  text-align:center;
+  font-family:'JetBrains Mono',monospace;
+  font-size:0.9rem;
+}
+textarea{
+  resize:vertical;
+  min-height:160px;
+  line-height:1.6;
+}
+select{
+  cursor:pointer;
+  appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;
+  background-position:right 14px center;
+  padding-right:44px;
+}
+select:hover{
+  border-color:var(--border-light);
+}
+
+.key-input-wrap{
+  position:relative;
+}
+.key-input-wrap input{
+  padding-right:48px;
+  font-family:'JetBrains Mono',monospace;
+  font-size:0.85rem;
+  letter-spacing:0.02em;
+}
+.key-toggle{
+  position:absolute;
+  right:12px;
+  top:50%;
+  transform:translateY(-50%);
+  background:none;
+  border:none;
+  color:var(--text-muted);
+  cursor:pointer;
+  padding:4px;
+  border-radius:6px;
+  transition:all var(--transition-fast);
+  font-size:1rem;
+}
+.key-toggle:hover{
+  color:var(--text);
+  background:var(--border);
+}
+
+.endpoint-select-wrap{
+  position:relative;
+  display:flex;
+  gap:8px;
+}
+.endpoint-select-wrap select{
+  flex:1;
+}
+.refresh-endpoint{
+  padding:8px 12px;
+  background:var(--surface-elevated);
+  border:1px solid var(--border);
+  border-radius:8px;
+  cursor:pointer;
+  transition:all var(--transition-fast);
+  font-size:1rem;
+  min-width:36px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.refresh-endpoint:hover{
+  border-color:var(--accent);
+  background:var(--accent-glow);
+}
+
+/* Row layout */
+.row{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:14px;
+}
+
+/* Buttons */
+.btn{
+  position:relative;
+  padding:16px 24px;
+  border:none;
+  border-radius:14px;
+  font-family:inherit;
+  font-size:1rem;
+  font-weight:600;
+  cursor:pointer;
+  transition:all var(--transition-fast);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:10px;
+  overflow:hidden;
+}
+.btn-primary{
+  background:var(--gradient-1);
+  color:#fff;
+  box-shadow:var(--shadow-sm),var(--shadow-glow);
+}
+.btn-primary::before{
+  content:'';
+  position:absolute;
+  inset:0;
+  background:linear-gradient(135deg,rgba(255,255,255,0.2),transparent 50%);
+  opacity:0;
+  transition:opacity var(--transition-fast);
+}
+.btn-primary:hover::before{opacity:1}
+.btn-primary:hover{
+  transform:translateY(-2px);
+  box-shadow:var(--shadow-md),var(--shadow-glow);
+}
+.btn-primary:active{
+  transform:translateY(0);
+}
+.btn-primary:disabled{
+  opacity:0.5;
+  cursor:not-allowed;
+  transform:none;
+  box-shadow:var(--shadow-sm);
+}
+
+.btn-secondary{
+  background:var(--surface-elevated);
+  color:var(--text);
+  border:1px solid var(--border);
+}
+.btn-secondary:hover{
+  border-color:var(--accent);
+  background:var(--accent-glow);
+}
+
+.local-save-card{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  padding:14px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  background:var(--surface-elevated);
+}
+.local-save-toggle{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  color:var(--text-secondary);
+  font-size:0.85rem;
+  font-weight:600;
+  text-transform:none;
+  letter-spacing:0;
+}
+.local-save-toggle input{
+  width:auto;
+  accent-color:var(--accent);
+}
+.local-save-actions{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.local-save-actions button{
+  padding:8px 12px;
+  border:1px solid var(--border);
+  border-radius:8px;
+  background:transparent;
+  color:var(--text-secondary);
+  cursor:pointer;
+  transition:all var(--transition-fast);
+  font-size:0.8rem;
+}
+.local-save-actions button:hover{
+  border-color:var(--accent);
+  color:var(--accent);
+  background:var(--accent-glow);
+}
+.local-save-status{
+  font-size:0.75rem;
+  color:var(--text-muted);
+  line-height:1.5;
+  word-break:break-all;
+}
+
+/* Spinner */
+.spinner{
+  width:20px;
+  height:20px;
+  border:2px solid rgba(255,255,255,0.3);
+  border-top-color:#fff;
+  border-radius:50%;
+  animation:spin 0.6s linear infinite;
+  display:none;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Reference images upload */
+.ref-images-area{
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+}
+
+.ref-upload-btn{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:12px;
+  padding:24px 16px;
+  background:var(--surface-elevated);
+  border:1px dashed var(--border);
+  border-radius:12px;
+  cursor:pointer;
+  transition:all var(--transition-fast);
+  color:var(--text-secondary);
+  width:100%;
+  min-height:80px;
+}
+.ref-upload-btn:hover{
+  border-color:var(--accent);
+  background:var(--accent-glow);
+  color:var(--accent);
+}
+.ref-upload-btn.disabled{
+  opacity:0.5;
+  cursor:not-allowed;
+  pointer-events:none;
+}
+.ref-upload-btn svg{
+  transition:transform var(--transition-fast);
+}
+.ref-upload-btn:hover svg{
+  transform:translateY(-3px);
+}
+.ref-upload-btn.drag-over{
+  border-color:var(--accent);
+  background:var(--accent-glow);
+  color:var(--accent);
+  transform:scale(1.01);
+  border-style:solid;
+}
+.ref-upload-btn.drag-over svg{
+  transform:translateY(-6px) scale(1.15);
+}
+
+.btn-clear-ref-full{
+  width:100%;
+  padding:10px 16px;
+  border:1px solid var(--border);
+  border-radius:10px;
+  background:transparent;
+  color:var(--text-muted);
+  font-size:0.85rem;
+  cursor:pointer;
+  transition:all var(--transition-fast);
+  margin-top:8px;
+}
+.btn-clear-ref-full:hover{
+  border-color:var(--danger);
+  color:var(--danger);
+  background:rgba(255,107,107,0.1);
+}
+
+.ref-preview-list{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+.ref-preview-item{
+  position:relative;
+  width:60px;
+  height:60px;
+  border-radius:8px;
+  overflow:hidden;
+  border:1px solid var(--border);
+  animation:refPreviewIn 0.3s ease;
+  cursor:pointer;
+}
+@keyframes refPreviewIn{
+  from{opacity:0;transform:scale(0.8)}
+  to{opacity:1;transform:scale(1)}
+}
+.ref-preview-item img{
+  width:100%;
+  height:100%;
+  object-fit:cover;
+}
+.ref-preview-item .ref-delete{
+  position:absolute;
+  top:2px;
+  right:2px;
+  width:18px;
+  height:18px;
+  background:rgba(0,0,0,0.7);
+  border:none;
+  border-radius:50%;
+  color:#fff;
+  font-size:10px;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  opacity:0;
+  transition:opacity var(--transition-fast);
+}
+.ref-preview-item:hover .ref-delete{
+  opacity:1;
+}
+.ref-preview-item .ref-delete:hover{
+  background:var(--danger);
+}
+.ref-preview-item:hover{
+  border-color:var(--accent);
+}
+
+/* Status */
+.status{
+  font-size:0.85rem;
+  color:var(--text-secondary);
+  text-align:center;
+  min-height:24px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+}
+.status.success{color:var(--accent)}
+.status.error{color:var(--danger)}
+
+/* Divider */
+.divider{
+  height:1px;
+  background:linear-gradient(90deg,transparent,var(--border),transparent);
+  margin:4px 0;
+}
+
+/* History section */
+.history-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+.history-header label{margin:0}
+.clear-btn{
+  padding:6px 12px;
+  font-size:0.75rem;
+  background:transparent;
+  border:1px solid var(--border);
+  border-radius:8px;
+  color:var(--text-muted);
+  cursor:pointer;
+  transition:all var(--transition-fast);
+}
+.clear-btn:hover{
+  border-color:var(--danger);
+  color:var(--danger);
+}
+
+.history-list{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  max-height:320px;
+  overflow-y:auto;
+  padding-right:4px;
+}
+.history-list::-webkit-scrollbar{width:4px}
+.history-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+.history-item{
+  display:flex;
+  gap:12px;
+  padding:12px;
+  border-radius:12px;
+  background:var(--surface-elevated);
+  border:1px solid transparent;
+  cursor:pointer;
+  transition:all var(--transition-fast);
+  align-items:center;
+}
+.history-item:hover{
+  border-color:var(--border-light);
+  transform:translateX(4px);
+}
+.history-thumb{
+  width:48px;
+  height:48px;
+  border-radius:8px;
+  background:linear-gradient(135deg,var(--border),var(--surface-elevated));
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:1.4rem;
+  flex-shrink:0;
+  transition:transform var(--transition-fast);
+}
+.history-item:hover .history-thumb{
+  transform:scale(1.05);
+}
+.history-info{
+  flex:1;
+  overflow:hidden;
+}
+.history-info p{
+  font-size:0.85rem;
+  font-weight:500;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  color:var(--text);
+}
+.history-info span{
+  font-size:0.72rem;
+  color:var(--text-muted);
+}
+
+/* Main output area */
+.main{
+  display:flex;
+  flex-direction:column;
+  gap:24px;
+}
+
+.output-area{
+  position:relative;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:20px;
+  padding:28px;
+  display:flex;
+  flex-direction:column;
+  gap:20px;
+  box-shadow:var(--shadow-md);
+}
+.output-area::before{
+  content:'';
+  position:absolute;
+  inset:0;
+  border-radius:20px;
+  padding:1px;
+  background:linear-gradient(135deg,var(--border-light),transparent 50%);
+  -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  -webkit-mask-composite:xor;
+  mask-composite:exclude;
+  pointer-events:none;
+}
+
+.output-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+}
+.output-header h2{
+  font-size:1.1rem;
+  font-weight:600;
+  color:var(--text-secondary);
+}
+
+/* Current single image display */
+.current-image-area{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  min-height:300px;
+  background:var(--surface-elevated);
+  border-radius:16px;
+  overflow:hidden;
+  position:relative;
+}
+
+.current-image{
+  max-width:100%;
+  max-height:70vh;
+  display:block;
+  cursor:pointer;
+  transition:transform var(--transition-smooth);
+  animation:currentImageIn 0.4s ease;
+}
+@keyframes currentImageIn{
+  from{opacity:0;transform:scale(0.95)}
+  to{opacity:1;transform:scale(1)}
+}
+.current-image:hover{
+  transform:scale(1.02);
+}
+
+.current-actions{
+  position:absolute;
+  bottom:0;
+  left:0;
+  right:0;
+  padding:16px;
+  display:flex;
+  gap:10px;
+  justify-content:center;
+  background:linear-gradient(transparent,rgba(0,0,0,0.7));
+  opacity:0;
+  transition:opacity var(--transition-fast);
+}
+.current-image-area:hover .current-actions{
+  opacity:1;
+}
+.current-actions button{
+  padding:10px 20px;
+  border:none;
+  border-radius:8px;
+  background:rgba(255,255,255,0.15);
+  color:#fff;
+  font-family:inherit;
+  font-size:0.85rem;
+  font-weight:500;
+  cursor:pointer;
+  backdrop-filter:blur(10px);
+  transition:all var(--transition-fast);
+}
+.current-actions button:hover{
+  background:rgba(255,255,255,0.25);
+  transform:scale(1.05);
+}
+
+/* History section */
+.history-section{
+  position:relative;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:20px;
+  padding:24px;
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+  box-shadow:var(--shadow-md);
+}
+.history-section::before{
+  content:'';
+  position:absolute;
+  inset:0;
+  border-radius:20px;
+  padding:1px;
+  background:linear-gradient(135deg,var(--border-light),transparent 50%);
+  -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  -webkit-mask-composite:xor;
+  mask-composite:exclude;
+  pointer-events:none;
+}
+
+.history-section .history-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+.history-section .history-header h2{
+  font-size:1rem;
+  font-weight:600;
+  color:var(--text-secondary);
+}
+
+/* Masonry waterfall grid - horizontal-first layout with JS */
+.masonry-grid{
+  display:flex;
+  gap:12px;
+  max-height:1200px;
+  overflow-y:auto;
+  padding-right:4px;
+}
+.masonry-column{
+  flex:1;
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+}
+.masonry-grid::-webkit-scrollbar{width:4px}
+.masonry-grid::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+.masonry-item{
+  position:relative;
+  border-radius:12px;
+  overflow:visible;
+  background:var(--surface-elevated);
+  border:1px solid var(--border);
+  cursor:pointer;
+  transition:all var(--transition-fast);
+  animation:masonryIn 0.3s ease backwards;
+  margin-bottom:0;
+  display:block;
+}
+.masonry-item:nth-child(1){animation-delay:0s}
+.masonry-item:nth-child(2){animation-delay:0.05s}
+.masonry-item:nth-child(3){animation-delay:0.1s}
+.masonry-item:nth-child(4){animation-delay:0.15s}
+.masonry-item:nth-child(5){animation-delay:0.2s}
+.masonry-item:nth-child(6){animation-delay:0.25s}
+@keyframes masonryIn{
+  from{opacity:0;transform:translateY(20px)}
+  to{opacity:1;transform:translateY(0)}
+}
+.masonry-item:hover{
+  transform:translateY(-2px);
+  border-color:var(--accent);
+  box-shadow:var(--shadow-md);
+}
+.masonry-item img{
+  width:100%;
+  height:auto;
+  display:block;
+  border-radius:12px;
+}
+.masonry-item .overlay{
+  position:absolute;
+  left:0;
+  right:0;
+  bottom:0;
+  height:40%;
+  background:linear-gradient(transparent,rgba(0,0,0,0.7));
+  opacity:0;
+  transition:opacity var(--transition-fast);
+  border-radius:0 0 12px 12px;
+}
+.masonry-item:hover .overlay{opacity:1}
+.masonry-item .info{
+  position:absolute;
+  bottom:0;
+  left:0;
+  right:0;
+  padding:10px;
+  opacity:0;
+  transform:translateY(5px);
+  transition:all var(--transition-fast);
+}
+.masonry-item:hover .info{
+  opacity:1;
+  transform:translateY(0);
+}
+.masonry-item .info p{
+  font-size:0.75rem;
+  color:#fff;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.masonry-item .info span{
+  font-size:0.65rem;
+  color:rgba(255,255,255,0.6);
+}
+
+.masonry-item .delete-btn{
+  position:absolute;
+  top:8px;
+  right:8px;
+  width:24px;
+  height:24px;
+  background:rgba(255,107,107,0.8);
+  border:none;
+  border-radius:6px;
+  color:#fff;
+  font-size:12px;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  opacity:0;
+  transition:all var(--transition-fast);
+  z-index:10;
+}
+.masonry-item:hover .delete-btn{
+  opacity:1;
+}
+.masonry-item .delete-btn:hover{
+  background:var(--danger);
+  transform:scale(1.1);
+}
+
+/* Placeholder */
+.placeholder{
+  flex:1;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  padding:80px 40px;
+  color:var(--text-muted);
+  gap:16px;
+  text-align:center;
+}
+.placeholder svg{
+  width:80px;
+  height:80px;
+  opacity:0.3;
+  stroke:var(--text-muted);
+  animation:float 3s ease-in-out infinite;
+}
+@keyframes float{
+  0%,100%{transform:translateY(0)}
+  50%{transform:translateY(-10px)}
+}
+.placeholder p{
+  font-size:1rem;
+  max-width:280px;
+  line-height:1.6;
+}
+
+/* Lightbox */
+.lightbox{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,0.92);
+  z-index:1000;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  cursor:zoom-out;
+  backdrop-filter:blur(20px);
+  opacity:0;
+  transition:opacity var(--transition-smooth);
+}
+.lightbox.active{
+  display:flex;
+  opacity:1;
+}
+.lightbox img{
+  max-width:92vw;
+  max-height:92vh;
+  border-radius:16px;
+  box-shadow:0 0 100px rgba(0,229,160,0.2);
+  animation:lightboxIn 0.4s cubic-bezier(0.34,1.56,0.64,1);
+}
+@keyframes lightboxIn{
+  from{opacity:0;transform:scale(0.9)}
+  to{opacity:1;transform:scale(1)}
+}
+.lb-actions{
+  position:fixed;
+  bottom:40px;
+  display:flex;
+  gap:14px;
+}
+.lb-actions button{
+  padding:14px 28px;
+  border:none;
+  border-radius:12px;
+  background:rgba(255,255,255,0.1);
+  color:#fff;
+  font-family:inherit;
+  font-size:0.95rem;
+  font-weight:500;
+  cursor:pointer;
+  backdrop-filter:blur(10px);
+  transition:all var(--transition-fast);
+}
+.lb-actions button:hover{
+  background:rgba(255,255,255,0.2);
+  transform:translateY(-2px);
+}
+
+/* Toast notification */
+.toast{
+  position:fixed;
+  bottom:30px;
+  left:50%;
+  transform:translateX(-50%) translateY(100px);
+  padding:14px 28px;
+  background:var(--surface);
+  border:1px solid var(--accent);
+  border-radius:12px;
+  color:var(--text);
+  font-weight:500;
+  box-shadow:var(--shadow-lg),var(--shadow-glow);
+  z-index:2000;
+  opacity:0;
+  transition:all var(--transition-bounce);
+}
+.toast.show{
+  opacity:1;
+  transform:translateX(-50%) translateY(0);
+}
+
+/* Log panel */
+.log-panel{
+  position:relative;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:16px;
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+}
+
+.log-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+
+.log-actions{
+  display:flex;
+  gap:8px;
+}
+
+.log-copy,.log-clear{
+  padding:4px 10px;
+  font-size:0.7rem;
+  background:transparent;
+  border:1px solid var(--border);
+  border-radius:6px;
+  color:var(--text-muted);
+  cursor:pointer;
+  transition:all var(--transition-fast);
+}
+.log-copy:hover,.log-clear:hover{
+  border-color:var(--accent);
+  color:var(--accent);
+}
+
+.log-list{
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  max-height:180px;
+  overflow-y:auto;
+  font-family:'JetBrains Mono',monospace;
+  font-size:0.75rem;
+  padding:8px;
+  background:var(--surface-elevated);
+  border-radius:8px;
+  user-select:text;
+}
+.log-list::-webkit-scrollbar{width:4px}
+.log-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+.log-item{
+  padding:4px 0;
+  line-height:1.5;
+  user-select:text;
+  cursor:text;
+  border-bottom:1px dashed var(--border);
+}
+.log-item:last-child{
+  border-bottom:none;
+}
+.log-item.info{color:var(--text)}
+.log-item.success{color:var(--success)}
+.log-item.error{color:var(--danger)}
+.log-item.warning{color:var(--warning)}
+
+.log-time{
+  color:var(--text-muted);
+  margin-right:8px;
+}
+
+/* Custom endpoint list */
+.custom-endpoint-list{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  max-height:200px;
+  overflow-y:auto;
+  padding-right:4px;
+}
+.custom-endpoint-list::-webkit-scrollbar{width:4px}
+.custom-endpoint-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+.custom-endpoint-item{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:12px;
+  background:var(--surface-elevated);
+  border:1px solid var(--border);
+  border-radius:10px;
+  transition:all var(--transition-fast);
+}
+.custom-endpoint-item:hover{
+  border-color:var(--border-light);
+}
+.custom-endpoint-item.active{
+  border-color:var(--accent);
+  background:var(--accent-glow);
+}
+.custom-endpoint-item .ep-info{
+  flex:1;
+  overflow:hidden;
+}
+.custom-endpoint-item .ep-info .ep-name{
+  font-size:0.85rem;
+  font-weight:600;
+  color:var(--text);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.custom-endpoint-item .ep-info .ep-url{
+  font-size:0.7rem;
+  color:var(--text-muted);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  font-family:'JetBrains Mono',monospace;
+}
+.custom-endpoint-item .ep-info .ep-key{
+  font-size:0.65rem;
+  color:var(--text-secondary);
+  margin-top:2px;
+}
+.custom-endpoint-item .ep-actions{
+  display:flex;
+  gap:6px;
+}
+.custom-endpoint-item .ep-actions button{
+  padding:6px 10px;
+  border:none;
+  border-radius:6px;
+  background:var(--border);
+  color:var(--text);
+  cursor:pointer;
+  font-size:0.75rem;
+  transition:all var(--transition-fast);
+}
+.custom-endpoint-item .ep-actions button:hover{
+  background:var(--border-light);
+}
+.custom-endpoint-item .ep-actions .ep-edit:hover{
+  background:var(--accent-glow);
+  color:var(--accent);
+}
+.custom-endpoint-item .ep-actions .ep-delete:hover{
+  background:rgba(255,107,107,0.15);
+  color:var(--danger);
+}
+
+/* Modal */
+.modal-overlay{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,0.7);
+  backdrop-filter:blur(10px);
+  z-index:1500;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  opacity:0;
+  transition:opacity var(--transition-smooth);
+}
+.modal-overlay.active{
+  display:flex;
+  opacity:1;
+}
+.modal{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:20px;
+  padding:28px;
+  max-width:630px;
+  width:90%;
+  box-shadow:var(--shadow-lg);
+  animation:modalIn 0.3s cubic-bezier(0.34,1.56,0.64,1);
+}
+@keyframes modalIn{
+  from{opacity:0;transform:scale(0.9) translateY(20px)}
+  to{opacity:1;transform:scale(1) translateY(0)}
+}
+.modal h3{
+  font-size:1.2rem;
+  font-weight:700;
+  margin-bottom:20px;
+  color:var(--text);
+}
+.modal .form-group{
+  margin-bottom:16px;
+}
+.modal .modal-actions{
+  display:flex;
+  gap:12px;
+  margin-top:24px;
+}
+.modal .modal-actions .btn{
+  flex:1;
+}
+
+/* Utility */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--border-light)}
+
+/* Loading dots animation */
+.loading-dots::after{
+  content:'';
+  animation:loadingDots 1.5s infinite;
+}
+@keyframes loadingDots{
+  0%{content:''}
+  25%{content:'.'}
+  50%{content:'..'}
+  75%{content:'...'}
+  100%{content:''}
+}
+
+/* Task Queue Styles */
+.task-queue-section{
+  position:relative;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:20px;
+  padding:24px;
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+  box-shadow:var(--shadow-md);
+}
+.task-queue-section::before{
+  content:'';
+  position:absolute;
+  inset:0;
+  border-radius:20px;
+  padding:1px;
+  background:linear-gradient(135deg,var(--border-light),transparent 50%);
+  -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  -webkit-mask-composite:xor;
+  mask-composite:exclude;
+  pointer-events:none;
+}
+
+.task-queue-container{
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+  max-height:600px;
+  overflow-y:auto;
+  padding-right:4px;
+}
+
+.task-item{
+  background:var(--surface-elevated);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:14px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  transition:all var(--transition-fast);
+  animation:taskIn 0.3s ease;
+}
+@keyframes taskIn{
+  from{opacity:0;transform:translateY(10px)}
+  to{opacity:1;transform:translateY(0)}
+}
+.task-item[data-status="running"]{
+  border-color:var(--accent);
+  background:var(--accent-glow);
+}
+.task-item[data-status="completed"]{
+  opacity:0.7;
+}
+.task-item[data-status="failed"]{
+  border-color:var(--danger);
+}
+
+.task-header{
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+.task-id{
+  font-weight:600;
+  font-size:0.9rem;
+  color:var(--text);
+  font-family:'JetBrains Mono',monospace;
+}
+.task-status{
+  font-size:0.75rem;
+  font-weight:500;
+  padding:2px 8px;
+  border-radius:6px;
+  background:var(--surface);
+}
+.task-actions{
+  margin-left:auto;
+  display:flex;
+  gap:6px;
+}
+.task-btn{
+  width:24px;
+  height:24px;
+  border:1px solid var(--border);
+  background:var(--surface);
+  border-radius:6px;
+  color:var(--text);
+  cursor:pointer;
+  font-size:0.85rem;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  transition:all var(--transition-fast);
+  padding:0;
+}
+.task-btn:hover{
+  border-color:var(--accent);
+  background:var(--accent-glow);
+  color:var(--accent);
+}
+.task-btn-delete:hover{
+  border-color:var(--danger);
+  background:rgba(255,107,107,0.1);
+  color:var(--danger);
+}
+
+.task-prompt{
+  font-size:0.85rem;
+  color:var(--text-secondary);
+  line-height:1.4;
+}
+
+.task-progress{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.task-progress-bar{
+  height:6px;
+  background:var(--surface);
+  border-radius:3px;
+  overflow:hidden;
+}
+.task-progress-fill{
+  height:100%;
+  background:var(--gradient-1);
+  border-radius:3px;
+  transition:width var(--transition-smooth);
+}
+.task-progress-text{
+  font-size:0.7rem;
+  color:var(--text-muted);
+  font-family:'JetBrains Mono',monospace;
+}
+
+.task-meta{
+  font-size:0.7rem;
+  color:var(--text-muted);
+}
+</style>
+<script>
+(() => {
+  const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+  document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
+})();
+</script>
+</head>
+<body>
+<div class="bg-canvas"></div>
+<div class="grid-overlay"></div>
+
+<div class="app">
+  <div class="panel">
+    <div class="panel-header">
+      <div class="brand">
+        <h1>Image Generator</h1>
+        <p class="copyright">travel token</p>
+      </div>
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="切换主题">
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="form-group">
+      <label>延迟检测 <span id="endpointStatus" style="font-size:0.75rem;color:var(--text-muted);margin-left:8px">检测中...</span></label>
+      <div class="endpoint-select-wrap">
+        <button class="refresh-endpoint" onclick="testAllEndpoints()" title="重新测试延迟">🔄</button>
+      </div>
+      <div class="custom-endpoint-list" id="customEndpointList" style="display:none;margin-top:12px"></div>
+    </div>
+
+    <div class="form-group">
+      <label>当前 API Key <span id="currentKeyHint" style="font-size:0.7rem;color:var(--text-muted)"></span></label>
+      <div class="key-input-wrap">
+        <input type="password" id="apiKey" placeholder="sk-..." value="">
+        <button class="key-toggle" onclick="toggleKeyVisibility()" aria-label="显示/隐藏密钥">👁</button>
+      </div>
+      <span style="font-size:0.7rem;color:var(--text-muted);margin-top:4px">API Key 仅用于当前固定接口</span>
+    </div>
+
+    <div class="form-group">
+      <label>本地保存位置</label>
+      <div class="local-save-card">
+        <label class="local-save-toggle">
+          <input type="checkbox" id="autoLocalSave" onchange="toggleAutoLocalSave(this.checked)">
+          <span>生成成功后自动保存到本地文件夹</span>
+        </label>
+        <input type="text" id="localSavePath" placeholder="例如: generated-images 或 2026/04/outputs" oninput="handleLocalSavePathInput(this.value)">
+        <div class="local-save-actions">
+          <button type="button" onclick="chooseLocalSaveDirectory()">授权根目录</button>
+          <button type="button" onclick="forgetLocalSaveDirectory()">取消目录授权</button>
+        </div>
+        <div class="local-save-status" id="localSaveStatus">请输入保存文件夹，并授权根目录。不存在的文件夹会在保存前自动创建。</div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>接口类型 <span style="font-size:0.7rem;color:var(--text-muted)">(不同供应商支持的接口格式)</span></label>
+      <select id="apiTypeSelect" onchange="handleApiTypeChange()">
+        <option value="images_generations">Images Generations (/v1/images/generations) - 推荐</option>
+        <option value="responses">Responses API (/v1/responses) - 官方格式</option>
+        <option value="chat_completions">Chat Completions (/v1/chat/completions) - 旧版兼容</option>
+      </select>
+      <div id="apiTypeHint" style="font-size:0.75rem;color:var(--text-muted);margin-top:6px">
+        Images Generations: 返回 base64 图片数据，兼容性最佳<br>
+        Responses: OpenAI 官方新统一接口，部分供应商仅支持此格式
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Prompt</label>
+      <textarea id="prompt" placeholder="描述你想生成的图片...&#10;例如: A cyberpunk city at sunset with neon lights reflecting on wet streets" onpaste="handlePaste(event)"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label>参考图片 <span style="font-size:0.7rem;color:var(--text-muted)">(可选，最多4张，支持拖拽/粘贴)</span></label>
+      <div class="ref-images-area" id="refImagesArea">
+        <div class="ref-upload-btn" id="refUploadBtn"
+             onclick="triggerUpload()"
+             ondragover="handleDragOver(event)"
+             ondragleave="handleDragLeave(event)"
+             ondrop="handleDrop(event)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="28" height="28">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span id="refUploadText">点击上传或拖拽图片到此处</span>
+        </div>
+        <input type="file" id="refFileInput" accept="image/*" multiple style="display:none" onchange="handleUpload(event)">
+        <div class="ref-preview-list" id="refPreviewList"></div>
+        <button class="btn-clear-ref-full" id="clearRefBtn" onclick="clearRefImages()" style="display:none">清空参考图片</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>尺寸</label>
+      <select id="sizeSelect" onchange="handleSizeChange()">
+        <option value="auto">Auto (自动判断)</option>
+        <option value="custom">自定义尺寸</option>
+        <optgroup label="1:1 正方形">
+          <option value="1024x1024">1024×1024 (1M像素)</option>
+          <option value="2048x2048">2048×2048 (4M像素)</option>
+          <option value="2880x2880">2880×2880 (8M像素·最大)</option>
+        </optgroup>
+        <optgroup label="2:3 竖版">
+          <option value="1024x1536">1024×1536</option>
+          <option value="2048x3072">2048×3072</option>
+          <option value="2336x3504">2336×3504 (最大)</option>
+        </optgroup>
+        <optgroup label="3:2 横版">
+          <option value="1536x1024">1536×1024</option>
+          <option value="3072x2048">3072×2048</option>
+          <option value="3504x2336">3504×2336 (最大)</option>
+        </optgroup>
+        <optgroup label="3:4 竖版">
+          <option value="768x1024">768×1024</option>
+          <option value="1536x2048">1536×2048</option>
+          <option value="2304x3072">2304×3072</option>
+          <option value="2448x3264">2448×3264 (最大)</option>
+        </optgroup>
+        <optgroup label="4:3 横版">
+          <option value="1024x768">1024×768</option>
+          <option value="2048x1536">2048×1536</option>
+          <option value="3072x2304">3072×2304</option>
+          <option value="3264x2448">3264×2448 (最大)</option>
+        </optgroup>
+        <optgroup label="4:5 竖版">
+          <option value="1024x1280">1024×1280</option>
+          <option value="2048x2560">2048×2560</option>
+          <option value="2560x3200">2560×3200 (最大)</option>
+        </optgroup>
+        <optgroup label="5:4 横版">
+          <option value="1280x1024">1280×1024</option>
+          <option value="2560x2048">2560×2048</option>
+          <option value="3200x2560">3200×2560 (最大)</option>
+        </optgroup>
+        <optgroup label="9:16 竖版 (接近3:1)">
+          <option value="1024x1824">1024×1824</option>
+          <option value="1280x3840">1280×3840</option>
+          <option value="1920x3840">1920×3840</option>
+          <option value="2160x3840">2160×3840 (最大)</option>
+        </optgroup>
+        <optgroup label="16:9 横版 (接近3:1)">
+          <option value="1824x1024">1824×1024</option>
+          <option value="3840x1280">3840×1280</option>
+          <option value="3840x2160">3840×2160 (最大)</option>
+        </optgroup>
+      </select>
+      <div id="customSizeInputs" style="display:none;margin-top:10px">
+        <div style="display:flex;gap:8px">
+          <div style="flex:1;display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:0.7rem;text-transform:none;letter-spacing:0">高度</label>
+            <input type="number" id="customHeight" min="16" max="3840" step="16" placeholder="如 1024" oninput="validateCustomSize()">
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:0.7rem;text-transform:none;letter-spacing:0">宽度</label>
+            <input type="number" id="customWidth" min="16" max="3840" step="16" placeholder="如 1024" oninput="validateCustomSize()">
+          </div>
+        </div>
+        <div id="sizeValidationMsg" style="font-size:0.75rem;color:var(--text-muted);margin-top:6px"></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="form-group">
+        <label>图像质量</label>
+        <select id="quality">
+          <option value="high">High (高质量)</option>
+          <option value="medium">Medium (中等)</option>
+          <option value="low">Low (低质量)</option>
+          <option value="auto">Auto (自动)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>内容审核</label>
+        <select id="moderation">
+          <option value="low">Low (宽松)</option>
+          <option value="auto">Auto (自动)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="form-group">
+        <label>数量 (1-1000)</label>
+        <input type="number" id="count" min="1" max="1000" value="1" placeholder="1">
+      </div>
+      <div class="form-group">
+        <label>并发数 (1-100)</label>
+        <input type="number" id="concurrency" min="1" max="100" value="5" placeholder="5">
+      </div>
+    </div>
+
+    <button class="btn btn-primary" id="generateBtn" onclick="generate()">
+      <span class="spinner" id="spinner"></span>
+      <span id="btnText">生成图片</span>
+    </button>
+
+    <div class="status" id="status"></div>
+
+    <div class="divider"></div>
+
+    <div class="log-panel">
+      <div class="log-header">
+        <label style="margin:0">操作日志</label>
+        <div class="log-actions">
+          <button class="log-copy" onclick="copyAllLogs()">复制全部</button>
+          <button class="log-clear" onclick="clearLog()">清空</button>
+        </div>
+      </div>
+      <div class="log-list" id="logList"></div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="output-area">
+      <div class="output-header">
+        <h2 id="outputTitle">当前生成</h2>
+        <span id="outputInfo" style="font-size:0.8rem;color:var(--text-muted)"></span>
+      </div>
+      <div class="current-image-area" id="currentImageArea">
+        <div class="placeholder">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="3" y="3" width="18" height="18" rx="3"/>
+            <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/>
+            <path d="M21 15l-5-5L5 21"/>
+          </svg>
+          <p>输入 Prompt 开始生成图片<br>双击图片可放大预览</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="task-queue-section">
+      <div class="history-header">
+        <h2>任务队列</h2>
+        <button class="clear-btn" onclick="clearCompletedTasks()">清空已完成</button>
+      </div>
+      <div class="task-queue-container" id="taskQueueContainer">
+        <div style="text-align:center;padding:20px;color:var(--text-muted);font-size:0.85rem">暂无任务</div>
+      </div>
+    </div>
+
+    <div class="history-section">
+      <div class="history-header">
+        <h2>历史记录</h2>
+        <button class="clear-btn" onclick="clearHistory()">清空历史</button>
+      </div>
+      <div class="masonry-grid" id="historyGrid"></div>
+    </div>
+  </div>
+</div>
+
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <img id="lbImg" src="" alt="Preview">
+  <div class="lb-actions" onclick="event.stopPropagation()">
+    <button onclick="downloadImage(document.getElementById('lbImg').src,'ai-image.png')">下载原图</button>
+    <button onclick="copyImage(document.getElementById('lbImg').src)">复制图片</button>
+    <button onclick="closeLightbox()">关闭预览</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- Custom Endpoint Modal -->
+<div class="modal-overlay" id="customEndpointModal" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h3 id="modalTitle">添加自定义线路</h3>
+    <div class="form-group">
+      <label>线路名称</label>
+      <input type="text" id="customEndpointName" placeholder="例如: 我的私有线路">
+    </div>
+    <div class="form-group">
+      <label>API 地址 (基础地址)</label>
+      <input type="text" id="customEndpointUrl" placeholder="https://api.example.com">
+      <span style="font-size:0.7rem;color:var(--text-muted);margin-top:4px">只需输入基础地址，接口路径会根据类型自动拼接</span>
+    </div>
+    <div class="form-group">
+      <label>接口类型</label>
+      <select id="customEndpointApiType">
+        <option value="images_generations">Images Generations (/v1/images/generations)</option>
+        <option value="responses">Responses API (/v1/responses)</option>
+        <option value="chat_completions">Chat Completions (/v1/chat/completions)</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Model ID <span style="font-size:0.7rem;color:var(--text-muted)">(不同供应商可能不同)</span></label>
+      <input type="text" id="customEndpointModel" placeholder="gpt-image-2">
+      <span style="font-size:0.7rem;color:var(--text-muted);margin-top:4px">留空则使用默认: gpt-image-2</span>
+    </div>
+    <div class="form-group">
+      <label>API Key</label>
+      <div class="key-input-wrap">
+        <input type="password" id="customEndpointKey" placeholder="sk-...">
+        <button class="key-toggle" onclick="toggleModalKeyVisibility()" aria-label="显示/隐藏密钥">👁</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeCustomEndpointModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveCustomEndpoint()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Parse Error Modal -->
+<div class="modal-overlay" id="parseErrorModal" onclick="closeParseErrorModal(event)">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:800px">
+    <h3>⚠️ 响应数据解析失败</h3>
+    <p style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:20px">
+      无法从 API 响应中提取图片数据。请检查响应格式是否正确，或将以下信息反馈给开发者以适配新格式。
+    </p>
+    <div class="form-group">
+      <label>请求 URL</label>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="parseErrorUrl" readonly style="font-family:'JetBrains Mono',monospace;font-size:0.8rem">
+        <button class="btn btn-secondary" onclick="copyParseErrorUrl()" style="padding:8px 12px;font-size:0.85rem">复制</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>请求体 (Request Body)</label>
+      <div style="position:relative">
+        <textarea id="parseErrorRequest" readonly style="font-family:'JetBrains Mono',monospace;font-size:0.8rem;min-height:120px;max-height:200px;overflow-y:auto"></textarea>
+        <button class="btn btn-secondary" onclick="copyParseErrorRequest()" style="position:absolute;top:8px;right:8px;padding:6px 10px;font-size:0.75rem">复制</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>响应体 (Response Body)</label>
+      <div style="position:relative">
+        <textarea id="parseErrorResponse" readonly style="font-family:'JetBrains Mono',monospace;font-size:0.8rem;min-height:180px;max-height:300px;overflow-y:auto"></textarea>
+        <button class="btn btn-secondary" onclick="copyParseErrorResponse()" style="position:absolute;top:8px;right:8px;padding:6px 10px;font-size:0.75rem">复制</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeParseErrorModal()">关闭</button>
+      <button class="btn btn-primary" onclick="copyAllParseErrorInfo()">复制全部信息</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Version info - 更新时请同步修改
+const APP_VERSION = '2.0';
+const APP_VERSION_DATE = '2026-04-25';
+
+// API endpoints configuration
+const API_BASE_URL = 'https://code.shoestravel.xin';
+const API_ENDPOINTS = [
+  {
+    url: `${API_BASE_URL}/v1/images/generations`,
+    editUrl: `${API_BASE_URL}/v1/images/edits`,
+    responsesUrl: `${API_BASE_URL}/v1/responses`,
+    chatCompletionsUrl: `${API_BASE_URL}/v1/chat/completions`,
+    name: '延迟检测',
+    delay: null,
+    isCustom: false
+  }
+];
+let customEndpoints = []; // Disabled: this build only uses API_BASE_URL
+let currentEndpoint = API_ENDPOINTS[0];
+let currentApiType = 'images_generations'; // 'images_generations' or 'responses'
+let generating = false;
+let editingEndpointId = null; // For editing existing custom endpoint
+let localSaveDirectoryHandle = null;
+let autoLocalSaveEnabled = false;
+let localSavePath = 'generated-images';
+
+// Task Queue System
+let taskIdCounter = 0;
+let taskQueue = []; // All tasks: { id, status, prompt, params, results, createdAt, startedAt, completedAt, progress, abortController }
+let globalThreadPool = null; // Will hold the active thread pool manager
+
+// IndexedDB setup
+let db = null;
+const DB_NAME = 'ImageGeneratorDB';
+const DB_VERSION = 2;
+const STORE_HISTORY = 'history';
+const STORE_CONFIG = 'config';
+
+function initDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+    request.onerror = () => {
+      console.error('IndexedDB 初始化失败:', request.error);
+      reject(request.error);
+    };
+
+    request.onsuccess = () => {
+      db = request.result;
+      resolve(db);
+    };
+
+    request.onupgradeneeded = (event) => {
+      const database = event.target.result;
+
+      // History store
+      if (!database.objectStoreNames.contains(STORE_HISTORY)) {
+        const historyStore = database.createObjectStore(STORE_HISTORY, { keyPath: 'id', autoIncrement: true });
+        historyStore.createIndex('time', 'time', { unique: false });
+      }
+
+      // Config store (key-value pairs)
+      if (!database.objectStoreNames.contains(STORE_CONFIG)) {
+        database.createObjectStore(STORE_CONFIG, { keyPath: 'key' });
+      }
+    };
+  });
+}
+
+// Config helpers
+function getConfig(key) {
+  return new Promise((resolve, reject) => {
+    if (!db) { resolve(null); return; }
+    const tx = db.transaction([STORE_CONFIG], 'readonly');
+    const store = tx.objectStore(STORE_CONFIG);
+    const request = store.get(key);
+    request.onsuccess = () => resolve(request.result?.value || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function setConfig(key, value) {
+  return new Promise((resolve, reject) => {
+    if (!db) { resolve(); return; }
+    const tx = db.transaction([STORE_CONFIG], 'readwrite');
+    const store = tx.objectStore(STORE_CONFIG);
+    const request = store.put({ key, value });
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+// Custom endpoints management
+async function loadCustomEndpoints() {
+  customEndpoints = [];
+  await setConfig('customEndpoints', []);
+  log('自定义线路已禁用，仅使用我的接口', 'info');
+}
+
+async function saveCustomEndpointsToDB() {
+  await setConfig('customEndpoints', customEndpoints);
+  log('自定义线路已保存到数据库', 'success');
+}
+
+function renderCustomEndpointList() {
+  const list = document.getElementById('customEndpointList');
+  if (!list) return;
+  list.style.display = 'none';
+  list.innerHTML = '';
+  return;
+
+  if (customEndpoints.length === 0) {
+    list.innerHTML = '<span style="font-size:0.75rem;color:var(--text-muted)">暂无自定义线路，点击上方 + 添加</span>';
+    return;
+  }
+
+  list.innerHTML = customEndpoints.map((ep, i) => `
+    <div class="custom-endpoint-item ${currentEndpoint?.id === ep.id ? 'active' : ''}" data-id="${ep.id}">
+      <div class="ep-info">
+        <div class="ep-name">${escapeHtml(ep.name)}</div>
+        <div class="ep-url">${escapeHtml((ep.url?.replace('/v1/images/generations', '') || ep.responsesUrl?.replace('/v1/responses', '') || ''))}</div>
+        <div class="ep-key">Key: ${ep.apiKey ? '已配置' : '未配置'} · 类型: ${ep.defaultApiType === 'responses' ? 'Responses' : ep.defaultApiType === 'chat_completions' ? 'Chat' : 'Images'} · Model: ${ep.model || 'gpt-image-2'}</div>
+      </div>
+      <div class="ep-actions">
+        <button class="ep-use" onclick="useCustomEndpoint('${ep.id}')">使用</button>
+        <button class="ep-edit" onclick="editCustomEndpoint('${ep.id}')">编辑</button>
+        <button class="ep-delete" onclick="deleteCustomEndpoint('${ep.id}')">删除</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function generateEndpointId() {
+  return 'custom_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+function showAddCustomEndpointModal() {
+  editingEndpointId = null;
+  document.getElementById('modalTitle').textContent = '添加自定义线路';
+  document.getElementById('customEndpointName').value = '';
+  document.getElementById('customEndpointUrl').value = '';
+  document.getElementById('customEndpointApiType').value = 'images_generations';
+  document.getElementById('customEndpointModel').value = '';
+  document.getElementById('customEndpointKey').value = '';
+  document.getElementById('customEndpointModal').classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+function editCustomEndpoint(id) {
+  const ep = customEndpoints.find(e => e.id === id);
+  if (!ep) {
+    showToast('未找到该线路');
+    return;
+  }
+  editingEndpointId = id;
+  document.getElementById('modalTitle').textContent = '编辑自定义线路';
+  document.getElementById('customEndpointName').value = ep.name;
+  // Show base URL (without /v1/... paths)
+  const baseUrl = ep.url?.replace(/\/v1\/.*$/, '') || ep.responsesUrl?.replace(/\/v1\/.*$/, '') || '';
+  document.getElementById('customEndpointUrl').value = baseUrl;
+  document.getElementById('customEndpointApiType').value = ep.defaultApiType || 'images_generations';
+  document.getElementById('customEndpointModel').value = ep.model || 'gpt-image-2';
+  document.getElementById('customEndpointKey').value = ep.apiKey || '';
+  document.getElementById('customEndpointModal').classList.add('active');
+  document.body.style.overflow = 'hidden';
+  log(`编辑自定义线路: ${ep.name}`, 'info');
+}
+
+function closeCustomEndpointModal() {
+  document.getElementById('customEndpointModal').classList.remove('active');
+  document.body.style.overflow = '';
+  editingEndpointId = null;
+}
+
+function closeModal(event) {
+  if (event.target.id === 'customEndpointModal') {
+    closeCustomEndpointModal();
+  }
+}
+
+// Parse Error Modal functions
+let currentParseErrorInfo = null;
+
+function showParseErrorModal(info) {
+  currentParseErrorInfo = info;
+
+  // 根据错误类型设置标题
+  const modalTitle = document.querySelector('#parseErrorModal h3');
+  const hasResponse = info.responseBody && !info.responseBody.suggestions;
+  if (hasResponse) {
+    modalTitle.textContent = '⚠️ 响应数据解析失败';
+    document.querySelector('#parseErrorModal p').textContent =
+      '无法从 API 响应中提取图片数据。请检查响应格式是否正确，或将以下信息反馈给开发者以适配新格式。';
+  } else {
+    modalTitle.textContent = '❌ 网络请求失败';
+    document.querySelector('#parseErrorModal p').textContent =
+      `请求未能成功发出或收到响应。错误: ${info.responseBody?.error || 'Unknown'} (${info.responseBody?.errorType || 'Unknown'})`;
+  }
+
+  document.getElementById('parseErrorUrl').value = info.requestUrl || '';
+  document.getElementById('parseErrorRequest').value = JSON.stringify(info.requestBody, null, 2);
+  document.getElementById('parseErrorResponse').value = JSON.stringify(info.responseBody, null, 2);
+
+  document.getElementById('parseErrorModal').classList.add('active');
+  document.body.style.overflow = 'hidden';
+
+  log(`显示错误详情弹窗`, 'warning');
+}
+
+function serializeRequestBodyForDebug(body) {
+  if (body instanceof FormData) {
+    const entries = {};
+    body.forEach((value, key) => {
+      if (value instanceof File || value instanceof Blob) {
+        entries[key] = {
+          type: value.type || 'application/octet-stream',
+          size: value.size,
+          name: value.name || 'blob'
+        };
+      } else {
+        entries[key] = value;
+      }
+    });
+    return entries;
+  }
+  return body || {};
+}
+
+function closeParseErrorModal(event) {
+  if (event && event.target.id !== 'parseErrorModal') return;
+  document.getElementById('parseErrorModal').classList.remove('active');
+  document.body.style.overflow = '';
+  currentParseErrorInfo = null;
+}
+
+function copyParseErrorUrl() {
+  const url = document.getElementById('parseErrorUrl').value;
+  navigator.clipboard.writeText(url).then(() => showToast('URL 已复制'));
+}
+
+function copyParseErrorRequest() {
+  const request = document.getElementById('parseErrorRequest').value;
+  navigator.clipboard.writeText(request).then(() => showToast('请求体已复制'));
+}
+
+function copyParseErrorResponse() {
+  const response = document.getElementById('parseErrorResponse').value;
+  navigator.clipboard.writeText(response).then(() => showToast('响应体已复制'));
+}
+
+function copyAllParseErrorInfo() {
+  const url = document.getElementById('parseErrorUrl').value;
+  const request = document.getElementById('parseErrorRequest').value;
+  const response = document.getElementById('parseErrorResponse').value;
+
+  const fullInfo = `=== 解析错误详情 ===
+任务ID: ${currentParseErrorInfo?.taskId || 'N/A'}
+请求序号: ${currentParseErrorInfo?.requestIndex || 'N/A'}
+
+=== 请求 URL ===
+${url}
+
+=== 请求体 ===
+${request}
+
+=== 响应体 ===
+${response}`;
+
+  navigator.clipboard.writeText(fullInfo).then(() => showToast('全部信息已复制'));
+}
+
+function toggleModalKeyVisibility() {
+  const inp = document.getElementById('customEndpointKey');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+async function saveCustomEndpoint() {
+  const name = document.getElementById('customEndpointName').value.trim();
+  const url = document.getElementById('customEndpointUrl').value.trim();
+  const apiKey = document.getElementById('customEndpointKey').value.trim();
+  const endpointApiType = document.getElementById('customEndpointApiType').value;
+  const modelId = document.getElementById('customEndpointModel').value.trim() || 'gpt-image-2';
+
+  if (!name) {
+    showToast('请输入线路名称');
+    return;
+  }
+  if (!url) {
+    showToast('请输入 API 地址');
+    return;
+  }
+
+  // Normalize URL - just base URL, paths will be generated based on API type
+  let baseUrl = url;
+  // Remove any trailing paths like /v1/images/generations or /v1/responses
+  baseUrl = baseUrl.replace(/\/v1\/.*$/, '');
+  if (baseUrl.endsWith('/')) {
+    baseUrl = baseUrl.slice(0, -1);
+  }
+
+  // Generate all URLs
+  const imagesGenerationsUrl = baseUrl + '/v1/images/generations';
+  const responsesUrl = baseUrl + '/v1/responses';
+  const chatCompletionsUrl = baseUrl + '/v1/chat/completions';
+
+  if (editingEndpointId) {
+    // Edit existing
+    const idx = customEndpoints.findIndex(e => e.id === editingEndpointId);
+    if (idx >= 0) {
+      customEndpoints[idx] = {
+        ...customEndpoints[idx],
+        name,
+        url: imagesGenerationsUrl,
+        responsesUrl,
+        chatCompletionsUrl,
+        defaultApiType: endpointApiType,
+        model: modelId,
+        apiKey
+      };
+      log(`更新自定义线路: ${name} (model: ${modelId})`, 'success');
+    }
+  } else {
+    // Add new
+    const newEndpoint = {
+      id: generateEndpointId(),
+      name,
+      url: imagesGenerationsUrl,
+      responsesUrl,
+      chatCompletionsUrl,
+      defaultApiType: endpointApiType,
+      model: modelId,
+      apiKey,
+      isCustom: true,
+      delay: null
+    };
+    customEndpoints.push(newEndpoint);
+    const apiTypeLabel = endpointApiType === 'responses' ? 'Responses API' : endpointApiType === 'chat_completions' ? 'Chat Completions' : 'Images Generations';
+    log(`添加自定义线路: ${name} (${apiTypeLabel}, model: ${modelId})`, 'success');
+  }
+
+  await saveCustomEndpointsToDB();
+  renderCustomEndpointList();
+  rebuildEndpointSelect();
+  closeCustomEndpointModal();
+  showToast(editingEndpointId ? '线路已更新' : '线路已添加');
+}
+
+async function deleteCustomEndpoint(id) {
+  const idx = customEndpoints.findIndex(e => e.id === id);
+  if (idx < 0) {
+    showToast('未找到该线路');
+    return;
+  }
+
+  const name = customEndpoints[idx].name;
+  customEndpoints.splice(idx, 1);
+  await saveCustomEndpointsToDB();
+  renderCustomEndpointList();
+  rebuildEndpointSelect();
+
+  // If deleted endpoint was current, switch to first default
+  if (currentEndpoint?.id === id) {
+    currentEndpoint = API_ENDPOINTS[0];
+    updateApiKeyHint();
+  }
+
+  log(`删除自定义线路: ${name}`, 'warning');
+  showToast('线路已删除');
+}
+
+async function useCustomEndpoint(id) {
+  const ep = customEndpoints.find(e => e.id === id);
+  if (!ep) {
+    showToast('未找到该线路');
+    return;
+  }
+
+  // Save default key before switching to custom (if currently on default)
+  if (!currentEndpoint?.isCustom) {
+    await saveCurrentKey();
+  }
+
+  currentEndpoint = ep;
+
+  // Auto-switch to endpoint's recommended API type
+  if (ep.defaultApiType) {
+    currentApiType = ep.defaultApiType;
+    document.getElementById('apiTypeSelect').value = ep.defaultApiType;
+    await setConfig('apiType', ep.defaultApiType);
+    updateApiTypeHint();
+  }
+
+  // Test endpoint latency
+  const delay = await testEndpoint(ep);
+  ep.delay = delay;
+
+  // Update UI
+  rebuildEndpointSelect();
+
+  const status = document.getElementById('endpointStatus');
+  const delayText = ep.delay >= 9999 ? '>5000ms' : `${ep.delay}ms`;
+  status.textContent = `已选择: ${ep.name} (${delayText})`;
+  status.style.color = ep.delay < 200 ? 'var(--success)' : ep.delay < 500 ? 'var(--accent)' : 'var(--warning)';
+
+  updateApiKeyHint();
+  renderCustomEndpointList();
+
+  // Save preference
+  await setConfig('endpoint', 'custom_' + id);
+
+  const modelInfo = ep.model && ep.model !== 'gpt-image-2' ? `, model: ${ep.model}` : '';
+  const apiTypeLabel = ep.defaultApiType === 'responses' ? 'Responses API' : ep.defaultApiType === 'chat_completions' ? 'Chat Completions' : 'Images Generations';
+  log(`使用自定义线路: ${ep.name} (${apiTypeLabel}${modelInfo})`, 'success');
+  showToast(`已切换到 ${ep.name}`);
+}
+
+function rebuildEndpointSelect() {
+  const select = document.getElementById('endpointSelect');
+  if (!select) return;
+
+  // Helper to format delay display
+  const formatDelay = (delay) => {
+    if (delay === null) return '未检测';
+    if (delay >= 9999) return '>5000ms';
+    return `${delay}ms`;
+  };
+
+  const endpoint = API_ENDPOINTS[0];
+  select.innerHTML = `<option value="0">${endpoint.name} - ${formatDelay(endpoint.delay)}</option>`;
+  select.value = '0';
+}
+
+function updateApiKeyHint() {
+  const hint = document.getElementById('currentKeyHint');
+  const keyInput = document.getElementById('apiKey');
+
+  if (currentEndpoint?.isCustom) {
+    hint.textContent = `(使用自定义线路专属 Key)`;
+    keyInput.disabled = true;
+    keyInput.style.opacity = '0.5';
+    keyInput.value = currentEndpoint.apiKey || '';
+  } else {
+    hint.textContent = `(固定接口)`;
+    keyInput.disabled = false;
+    keyInput.style.opacity = '1';
+  }
+}
+
+function clearAllStorage() {
+  return new Promise((resolve) => {
+    // Clear localStorage
+    const localStorageKeys = ['imgGenApiKey', 'imgGenTheme', 'imgGenHistory'];
+    let clearedSize = 0;
+    localStorageKeys.forEach(k => {
+      const data = localStorage.getItem(k);
+      if (data) clearedSize += new Blob([data]).size;
+      localStorage.removeItem(k);
+    });
+
+    // Clear IndexedDB
+    if (db) {
+      const tx = db.transaction([STORE_HISTORY, STORE_CONFIG], 'readwrite');
+      tx.objectStore(STORE_HISTORY).clear();
+      tx.objectStore(STORE_CONFIG).clear();
+    }
+
+    resolve(clearedSize);
+  });
+}
+
+function clearOldStorage() {
+  clearAllStorage().then(size => {
+    log('已清除所有数据 (localStorage + IndexedDB)', 'success');
+    log(`清除 localStorage 约 ${Math.round(size / 1024)} KB`, 'info');
+    showToast('已清除所有数据');
+    // Reset UI
+    document.getElementById('apiKey').value = '';
+    document.getElementById('historyGrid').innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:0.85rem">暂无历史记录</div>';
+    localSaveDirectoryHandle = null;
+    autoLocalSaveEnabled = false;
+    localSavePath = 'generated-images';
+    const checkbox = document.getElementById('autoLocalSave');
+    if (checkbox) checkbox.checked = false;
+    const pathInput = document.getElementById('localSavePath');
+    if (pathInput) pathInput.value = localSavePath;
+    updateLocalSaveStatus();
+  });
+}
+
+// Local file persistence
+function isFileSystemAccessSupported() {
+  return typeof window.showDirectoryPicker === 'function';
+}
+
+async function initLocalSaveSettings() {
+  autoLocalSaveEnabled = (await getConfig('autoLocalSaveEnabled')) === true;
+  localSaveDirectoryHandle = await getConfig('localSaveDirectoryHandle');
+  localSavePath = await getConfig('localSavePath') || 'generated-images';
+
+  const checkbox = document.getElementById('autoLocalSave');
+  if (checkbox) checkbox.checked = autoLocalSaveEnabled;
+  const pathInput = document.getElementById('localSavePath');
+  if (pathInput) pathInput.value = localSavePath;
+
+  await updateLocalSaveStatus();
+}
+
+async function updateLocalSaveStatus() {
+  const status = document.getElementById('localSaveStatus');
+  if (!status) return;
+
+  if (!isFileSystemAccessSupported()) {
+    status.textContent = '当前浏览器不支持自动写入本地目录。请使用 Chrome/Edge 打开，或继续使用“下载”按钮手动保存。';
+    return;
+  }
+
+  const pathError = validateLocalSavePath(localSavePath);
+  if (pathError) {
+    status.textContent = `保存位置无效：${pathError}`;
+    return;
+  }
+
+  if (!localSaveDirectoryHandle) {
+    status.textContent = autoLocalSaveEnabled
+      ? '已开启自动保存，但尚未授权根目录。请点击“授权根目录”，保存时会在根目录下自动创建输入的文件夹。'
+      : '请输入保存文件夹，并授权根目录。清空历史记录不会删除已本地保存的文件。';
+    return;
+  }
+
+  const permission = await queryLocalDirectoryPermission();
+  const permissionText = permission === 'granted' ? '已授权' : '需要重新授权';
+  status.textContent = `根目录：${localSaveDirectoryHandle.name || '已选择目录'}（${permissionText}）。图片将保存到：${localSavePath}`;
+}
+
+function normalizeLocalSavePath(path) {
+  return String(path || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\/+/g, '/');
+}
+
+function validateLocalSavePath(path) {
+  const normalized = normalizeLocalSavePath(path);
+  if (!normalized) return '请输入以文件夹结尾的保存位置';
+  if (/^[a-zA-Z]:/.test(normalized)) return '浏览器页面不能直接写入盘符路径，请先授权根目录，再输入其下的相对文件夹';
+  if (normalized.startsWith('~')) return '不支持 ~ 路径，请输入授权根目录下的相对文件夹';
+
+  const parts = normalized.split('/');
+  if (parts.some(part => part === '.' || part === '..')) return '路径不能包含 . 或 ..';
+  if (parts.some(part => /[<>:"|?*]/.test(part))) return '文件夹名称不能包含 < > : " | ? *';
+
+  return '';
+}
+
+async function handleLocalSavePathInput(value) {
+  localSavePath = normalizeLocalSavePath(value);
+  await setConfig('localSavePath', localSavePath);
+  await updateLocalSaveStatus();
+}
+
+function getLocalSavePathParts() {
+  const normalized = normalizeLocalSavePath(localSavePath);
+  return normalized.split('/').filter(Boolean);
+}
+
+async function queryLocalDirectoryPermission() {
+  if (!localSaveDirectoryHandle?.queryPermission) return 'prompt';
+  try {
+    return await localSaveDirectoryHandle.queryPermission({ mode: 'readwrite' });
+  } catch (e) {
+    return 'prompt';
+  }
+}
+
+async function ensureLocalDirectoryPermission() {
+  if (!isFileSystemAccessSupported()) {
+    showToast('当前浏览器不支持自动保存到本地目录', 'error');
+    return false;
+  }
+
+  if (!localSaveDirectoryHandle) {
+    await chooseLocalSaveDirectory();
+    return !!localSaveDirectoryHandle;
+  }
+
+  const currentPermission = await queryLocalDirectoryPermission();
+  if (currentPermission === 'granted') return true;
+
+  if (!localSaveDirectoryHandle.requestPermission) return false;
+
+  try {
+    const permission = await localSaveDirectoryHandle.requestPermission({ mode: 'readwrite' });
+    await updateLocalSaveStatus();
+    return permission === 'granted';
+  } catch (e) {
+    log('本地目录授权失败: ' + e.message, 'error');
+    await updateLocalSaveStatus();
+    return false;
+  }
+}
+
+async function chooseLocalSaveDirectory() {
+  if (!isFileSystemAccessSupported()) {
+    showToast('当前浏览器不支持授权本地保存根目录', 'error');
+    await updateLocalSaveStatus();
+    return;
+  }
+
+  try {
+    localSaveDirectoryHandle = await window.showDirectoryPicker({
+      id: 'image-generator-output',
+      mode: 'readwrite'
+    });
+    await setConfig('localSaveDirectoryHandle', localSaveDirectoryHandle);
+    log(`本地保存根目录已授权: ${localSaveDirectoryHandle.name}`, 'success');
+    showToast('本地保存根目录已授权');
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      log('授权本地保存根目录失败: ' + e.message, 'error');
+      showToast('授权根目录失败', 'error');
+    }
+  }
+
+  await updateLocalSaveStatus();
+}
+
+async function forgetLocalSaveDirectory() {
+  localSaveDirectoryHandle = null;
+  await setConfig('localSaveDirectoryHandle', null);
+  log('已取消本地保存根目录授权记录', 'warning');
+  showToast('已取消目录授权记录');
+  await updateLocalSaveStatus();
+}
+
+async function toggleAutoLocalSave(enabled) {
+  autoLocalSaveEnabled = enabled;
+  await setConfig('autoLocalSaveEnabled', enabled);
+  log(`自动本地保存已${enabled ? '开启' : '关闭'}`, enabled ? 'success' : 'info');
+
+  if (enabled && !localSaveDirectoryHandle) {
+    showToast('请授权本地保存根目录');
+  }
+
+  await updateLocalSaveStatus();
+}
+
+async function getOrCreateLocalSaveTargetDirectory() {
+  const pathError = validateLocalSavePath(localSavePath);
+  if (pathError) throw new Error(pathError);
+
+  let currentHandle = localSaveDirectoryHandle;
+  for (const part of getLocalSavePathParts()) {
+    currentHandle = await currentHandle.getDirectoryHandle(part, { create: true });
+  }
+
+  return currentHandle;
+}
+
+function sanitizeFileNamePart(value, fallback = 'image') {
+  const safe = String(value || '')
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60);
+
+  return safe || fallback;
+}
+
+function getImageExtension(blob, src) {
+  const mime = blob?.type || src.match(/^data:([^;,]+)/)?.[1] || '';
+  if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg';
+  if (mime.includes('webp')) return 'webp';
+  if (mime.includes('gif')) return 'gif';
+  if (mime.includes('avif')) return 'avif';
+  return 'png';
+}
+
+function buildLocalImageFileName(task, displayIndex, blob, src) {
+  const now = new Date();
+  const timestamp = now.toISOString().replace(/[:.]/g, '-');
+  const promptPart = sanitizeFileNamePart(task?.prompt, 'prompt');
+  const extension = getImageExtension(blob, src);
+  return `${timestamp}_task-${task?.id || '0'}_img-${displayIndex}_${promptPart}.${extension}`;
+}
+
+async function imageSourceToBlob(src) {
+  const response = await fetch(src);
+  if (!response.ok && !src.startsWith('data:')) {
+    throw new Error(`图片读取失败: HTTP ${response.status}`);
+  }
+  return await response.blob();
+}
+
+async function persistGeneratedImageToLocal(src, task, displayIndex) {
+  if (!autoLocalSaveEnabled) return;
+
+  try {
+    const hasPermission = await ensureLocalDirectoryPermission();
+    if (!hasPermission) {
+      log('自动本地保存跳过：根目录未授权', 'warning');
+      return;
+    }
+
+    const blob = await imageSourceToBlob(src);
+    const fileName = buildLocalImageFileName(task, displayIndex, blob, src);
+    const targetDirectoryHandle = await getOrCreateLocalSaveTargetDirectory();
+    const fileHandle = await targetDirectoryHandle.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+
+    log(`图片已持久化到本地目录: ${localSavePath}/${fileName}`, 'success');
+  } catch (e) {
+    log('自动本地保存失败: ' + e.message, 'error');
+    showToast('自动本地保存失败，请检查目录授权', 'error');
+  }
+}
+
+// Log functions
+function log(message, type = 'info') {
+  const logList = document.getElementById('logList');
+  const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  const item = document.createElement('div');
+  item.className = `log-item ${type}`;
+  item.innerHTML = `<span class="log-time">${time}</span>${message}`;
+  logList.insertBefore(item, logList.firstChild);
+
+  // Limit to 100 items
+  while (logList.children.length > 100) {
+    logList.removeChild(logList.lastChild);
+  }
+
+  // Scroll to top
+  logList.scrollTop = 0;
+}
+
+function clearLog() {
+  document.getElementById('logList').innerHTML = '';
+}
+
+function copyAllLogs() {
+  const logList = document.getElementById('logList');
+  const logs = [];
+
+  // Get all logs in reverse order (from oldest to newest)
+  const items = Array.from(logList.children).reverse();
+  items.forEach(item => {
+    const time = item.querySelector('.log-time')?.textContent || '';
+    const msg = item.textContent.replace(time, '').trim();
+    logs.push(`${time} ${msg}`);
+  });
+
+  const text = logs.join('\n');
+
+  navigator.clipboard.writeText(text).then(() => {
+    showToast('日志已复制到剪贴板');
+  }).catch(err => {
+    // Fallback for older browsers
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+    showToast('日志已复制到剪贴板');
+  });
+}
+
+// Task Queue Management Functions
+function createTask(prompt, params) {
+  const task = {
+    id: ++taskIdCounter,
+    status: 'pending', // pending, running, completed, failed, cancelled
+    prompt,
+    params, // { count, size, quality, moderation, refImages, endpoint, concurrency }
+    results: [],
+    progress: { completed: 0, total: params.count, success: 0, failed: 0 },
+    remainingRequests: 0, // Will be set when task starts
+    createdAt: Date.now(),
+    startedAt: null,
+    completedAt: null,
+    abortController: new AbortController()
+  };
+  taskQueue.push(task);
+  log(`任务 #${task.id} 已创建: ${params.count} 张图片`, 'info');
+  renderTaskQueue();
+  return task;
+}
+
+function getTask(taskId) {
+  return taskQueue.find(t => t.id === taskId);
+}
+
+function updateTaskStatus(taskId, status, updates = {}) {
+  const task = getTask(taskId);
+  if (!task) return;
+
+  task.status = status;
+  Object.assign(task, updates);
+
+  if (status === 'running' && !task.startedAt) {
+    task.startedAt = Date.now();
+  }
+  if (['completed', 'failed', 'cancelled'].includes(status) && !task.completedAt) {
+    task.completedAt = Date.now();
+  }
+
+  renderTaskQueue();
+}
+
+function deleteTask(taskId) {
+  const task = getTask(taskId);
+  if (!task) return;
+
+  // Cancel if running
+  if (task.status === 'running') {
+    task.abortController.abort();
+    log(`任务 #${taskId} 已取消`, 'warning');
+  }
+
+  // Remove from queue
+  const index = taskQueue.findIndex(t => t.id === taskId);
+  if (index >= 0) {
+    taskQueue.splice(index, 1);
+    log(`任务 #${taskId} 已删除`, 'info');
+    renderTaskQueue();
+  }
+}
+
+function moveTask(taskId, direction) {
+  const index = taskQueue.findIndex(t => t.id === taskId);
+  if (index < 0) return;
+
+  const task = taskQueue[index];
+  if (task.status !== 'pending') {
+    showToast('只能移动等待中的任务');
+    return;
+  }
+
+  const newIndex = direction === 'up' ? index - 1 : index + 1;
+  if (newIndex < 0 || newIndex >= taskQueue.length) return;
+
+  // Swap
+  [taskQueue[index], taskQueue[newIndex]] = [taskQueue[newIndex], taskQueue[index]];
+  renderTaskQueue();
+  log(`任务 #${taskId} 已${direction === 'up' ? '上移' : '下移'}`, 'info');
+}
+
+// Reference images management
+let refImages = []; // Array of base64 image data
+
+function triggerUpload() {
+  if (refImages.length >= 4) {
+    showToast('最多上传4张参考图片');
+    return;
+  }
+  document.getElementById('refFileInput').click();
+}
+
+function addRefImage(base64, source = '上传') {
+  if (refImages.length >= 4) {
+    showToast('最多4张参考图片，已忽略');
+    return false;
+  }
+  refImages.push(base64);
+  renderRefPreview();
+  log(`添加参考图片 (${source}): 数据大小约 ${Math.round(base64.length / 1024)} KB`, 'success');
+  return true;
+}
+
+function handleUpload(event) {
+  const files = event.target.files;
+  if (!files || files.length === 0) return;
+
+  const remainingSlots = 4 - refImages.length;
+  const filesToProcess = Array.from(files).slice(0, remainingSlots);
+
+  if (files.length > remainingSlots) {
+    showToast(`只处理了 ${remainingSlots} 张图片（已达上限）`);
+  }
+
+  filesToProcess.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      addRefImage(e.target.result, file.name);
+    };
+    reader.onerror = () => {
+      log(`读取文件失败: ${file.name}`, 'error');
+    };
+    reader.readAsDataURL(file);
+  });
+
+  event.target.value = '';
+}
+
+// Drag and drop handlers
+function handleDragOver(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  event.dataTransfer.dropEffect = 'copy';
+  document.getElementById('refUploadBtn').classList.add('drag-over');
+}
+
+function handleDragLeave(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  document.getElementById('refUploadBtn').classList.remove('drag-over');
+}
+
+function handleDrop(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  document.getElementById('refUploadBtn').classList.remove('drag-over');
+
+  const files = event.dataTransfer.files;
+  if (!files || files.length === 0) return;
+
+  const remainingSlots = 4 - refImages.length;
+  const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/')).slice(0, remainingSlots);
+
+  if (imageFiles.length === 0) {
+    showToast('请拖拽图片文件');
+    return;
+  }
+
+  if (files.length > imageFiles.length) {
+    showToast('部分非图片文件已忽略');
+  }
+
+  imageFiles.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      addRefImage(e.target.result, '拖拽: ' + file.name);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Paste handler for prompt textarea
+function handlePaste(event) {
+  const items = event.clipboardData?.items;
+  if (!items) return;
+
+  const imageItems = Array.from(items).filter(item => item.type.startsWith('image/'));
+
+  if (imageItems.length === 0) return; // No image, let default paste happen
+
+  event.preventDefault(); // Prevent default paste for images
+
+  const remainingSlots = 4 - refImages.length;
+  const itemsToProcess = imageItems.slice(0, remainingSlots);
+
+  if (imageItems.length > remainingSlots) {
+    showToast(`只处理了 ${remainingSlots} 张图片（已达上限）`);
+  }
+
+  itemsToProcess.forEach(item => {
+    const file = item.getAsFile();
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        addRefImage(e.target.result, '粘贴');
+      };
+      reader.readAsDataURL(file);
+    }
+  });
+
+  showToast(`已添加 ${itemsToProcess.length} 张参考图片`);
+}
+
+function renderRefPreview() {
+  const list = document.getElementById('refPreviewList');
+  const uploadBtn = document.getElementById('refUploadBtn');
+  const uploadText = document.getElementById('refUploadText');
+  const clearBtn = document.getElementById('clearRefBtn');
+
+  list.innerHTML = refImages.map((img, i) => `
+    <div class="ref-preview-item" onclick="previewRefImage(${i})">
+      <img src="${img}" alt="参考图 ${i + 1}">
+      <button class="ref-delete" onclick="event.stopPropagation();deleteRefImage(${i})">×</button>
+    </div>
+  `).join('');
+
+  // Show/hide clear button
+  clearBtn.style.display = refImages.length > 0 ? 'block' : 'none';
+
+  // Disable upload button if max reached
+  if (refImages.length >= 4) {
+    uploadBtn.classList.add('disabled');
+    uploadText.textContent = '已达上限 (4张)';
+  } else {
+    uploadBtn.classList.remove('disabled');
+    uploadText.textContent = refImages.length > 0
+      ? `继续上传 (${refImages.length}/4)`
+      : '点击上传或拖拽图片到此处';
+  }
+}
+
+function deleteRefImage(index) {
+  refImages.splice(index, 1);
+  renderRefPreview();
+  log(`删除参考图片 #${index + 1}`, 'info');
+}
+
+function previewRefImage(index) {
+  const src = refImages[index];
+  if (!src) return;
+
+  const area = document.getElementById('currentImageArea');
+  area.innerHTML = '';
+
+  const img = document.createElement('img');
+  img.className = 'current-image';
+  img.src = src;
+  img.alt = `参考图 ${index + 1}`;
+  img.ondblclick = () => openLightbox(src);
+
+  const actions = document.createElement('div');
+  actions.className = 'current-actions';
+
+  const dlBtn = document.createElement('button');
+  dlBtn.textContent = '下载';
+  dlBtn.onclick = () => downloadImage(src, `reference-${index + 1}.png`);
+
+  const cpBtn = document.createElement('button');
+  cpBtn.textContent = '复制';
+  cpBtn.onclick = () => copyImage(src);
+
+  actions.append(dlBtn, cpBtn);
+  area.append(img, actions);
+
+  document.getElementById('outputTitle').textContent = '参考图预览';
+  document.getElementById('outputInfo').textContent = `第 ${index + 1} 张`;
+  log(`预览参考图 #${index + 1}`, 'info');
+}
+
+function clearRefImages() {
+  refImages = [];
+  renderRefPreview();
+  showToast('已清空参考图片');
+}
+
+// Theme management (using IndexedDB)
+let themeInitialized = false;
+
+async function initTheme() {
+  const saved = await getConfig('theme');
+  if (saved) {
+    document.documentElement.setAttribute('data-theme', saved);
+  } else {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
+  }
+  themeInitialized = true;
+}
+
+async function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  await setConfig('theme', next);
+}
+
+// Listen for system theme changes
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', async (e) => {
+  const saved = await getConfig('theme');
+  if (!saved) {
+    document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+  }
+});
+
+// API Key management (using IndexedDB)
+let apiKeyInitialized = false;
+
+async function getKey() {
+  // If using custom endpoint, use its dedicated key
+  if (currentEndpoint?.isCustom) {
+    const customKey = currentEndpoint.apiKey?.trim();
+    if (customKey) {
+      log('使用自定义线路专属 API Key', 'info');
+      return customKey;
+    }
+    // Fallback to default key if custom endpoint has no key configured
+    log('自定义线路未配置 Key，尝试使用默认 Key', 'warning');
+  }
+
+  // Use default shared key
+  const k = document.getElementById('apiKey').value.trim();
+  if (k) await setConfig('apiKey', k);
+  return k;
+}
+
+async function loadApiKey() {
+  const saved = await getConfig('apiKey');
+  if (saved) document.getElementById('apiKey').value = saved;
+  apiKeyInitialized = true;
+}
+
+// Save current key when switching endpoints
+async function saveCurrentKey() {
+  const key = document.getElementById('apiKey').value.trim();
+  if (key) {
+    await setConfig('apiKey', key);
+    log('保存默认线路共用 Key', 'info');
+  }
+}
+
+// API Type management
+async function loadApiType() {
+  const saved = await getConfig('apiType');
+  if (saved && ['images_generations', 'responses', 'chat_completions'].includes(saved)) {
+    currentApiType = saved;
+    document.getElementById('apiTypeSelect').value = saved;
+  }
+  updateApiTypeHint();
+}
+
+async function handleApiTypeChange() {
+  currentApiType = document.getElementById('apiTypeSelect').value;
+  await setConfig('apiType', currentApiType);
+  updateApiTypeHint();
+  log(`切换接口类型: ${currentApiType === 'images_generations' ? 'Images Generations' : currentApiType === 'responses' ? 'Responses API' : 'Chat Completions'}`, 'success');
+}
+
+function updateApiTypeHint() {
+  const hint = document.getElementById('apiTypeHint');
+  const isDefaultEndpoint = !currentEndpoint?.isCustom;
+
+  if (isDefaultEndpoint) {
+    hint.innerHTML = '<strong style="color:var(--accent)">默认线路自动选择接口:</strong><br>• 无参考图 → Images Generations<br>• 有参考图 → Images Edit';
+  } else if (currentApiType === 'images_generations') {
+    hint.innerHTML = 'Images Generations: 返回 base64 图片数据，兼容性最佳<br>请求: { model, prompt, size, quality, ... }';
+  } else if (currentApiType === 'responses') {
+    hint.innerHTML = 'Responses: OpenAI 官方新统一接口格式<br>请求: { model, input, tools: [{ type: "image_generation" }] }';
+  } else if (currentApiType === 'chat_completions') {
+    hint.innerHTML = 'Chat Completions: 旧版兼容接口，部分供应商仅支持此格式<br>请求: { model, messages: [{ role: "user", content: "..." }] }';
+  }
+}
+
+function getEndpointUrl(endpoint, apiType) {
+  if (apiType === 'responses') {
+    return endpoint.responsesUrl || endpoint.url.replace('/v1/images/generations', '/v1/responses');
+  }
+  if (apiType === 'chat_completions') {
+    return endpoint.chatCompletionsUrl || endpoint.url.replace('/v1/images/generations', '/v1/chat/completions').replace('/v1/responses', '/v1/chat/completions');
+  }
+  if (apiType === 'images_edit') {
+    return endpoint.editUrl || endpoint.url.replace('/v1/images/generations', '/v1/images/edit');
+  }
+  return endpoint.url;
+}
+
+function toggleKeyVisibility() {
+  const inp = document.getElementById('apiKey');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+// Size handling functions
+function handleSizeChange() {
+  const select = document.getElementById('sizeSelect');
+  const customInputs = document.getElementById('customSizeInputs');
+  const customWidth = document.getElementById('customWidth');
+  const customHeight = document.getElementById('customHeight');
+
+  if (select.value === 'custom') {
+    customInputs.style.display = 'block';
+    // Set sensible defaults
+    customHeight.value = 1024;
+    customWidth.value = 1024;
+    validateCustomSize();
+  } else {
+    customInputs.style.display = 'none';
+    document.getElementById('sizeValidationMsg').textContent = '';
+  }
+  log(`选择尺寸: ${select.value === 'custom' ? '自定义' : select.value}`, 'info');
+}
+
+function validateCustomSize() {
+  const width = parseInt(document.getElementById('customWidth').value) || 0;
+  const height = parseInt(document.getElementById('customHeight').value) || 0;
+  const msgEl = document.getElementById('sizeValidationMsg');
+
+  // Reset message
+  msgEl.textContent = '';
+  msgEl.style.color = 'var(--text-muted)';
+
+  // Check both values present
+  if (!width || !height) {
+    msgEl.textContent = '请输入宽度和高度';
+    msgEl.style.color = 'var(--warning)';
+    return false;
+  }
+
+  // Rule 1: Maximum edge length ≤ 3840px
+  const maxEdge = Math.max(width, height);
+  if (maxEdge > 3840) {
+    msgEl.textContent = `最大边长超限: ${maxEdge}px > 3840px`;
+    msgEl.style.color = 'var(--danger)';
+    return false;
+  }
+
+  // Rule 2: Both edges must be multiples of 16px
+  if (width % 16 !== 0 || height % 16 !== 0) {
+    const suggestions = [];
+    if (width % 16 !== 0) suggestions.push(`宽度 ${width} → ${Math.round(width/16)*16}`);
+    if (height % 16 !== 0) suggestions.push(`高度 ${height} → ${Math.round(height/16)*16}`);
+    msgEl.textContent = `必须是16的倍数 (建议: ${suggestions.join(', ')})`;
+    msgEl.style.color = 'var(--warning)';
+    return false;
+  }
+
+  // Rule 3: Long edge to short edge ratio ≤ 3:1
+  const ratio = maxEdge / Math.min(width, height);
+  if (ratio > 3) {
+    msgEl.textContent = `比例超限: ${ratio.toFixed(2)}:1 > 3:1`;
+    msgEl.style.color = 'var(--danger)';
+    return false;
+  }
+
+  // Rule 4: Total pixels ≥ 655,360 and ≤ 8,294,400
+  const totalPixels = width * height;
+  if (totalPixels < 655360) {
+    msgEl.textContent = `像素太少: ${totalPixels.toLocaleString()} < 655,360 (最小约810×810)`;
+    msgEl.style.color = 'var(--warning)';
+    return false;
+  }
+  if (totalPixels > 8294400) {
+    msgEl.textContent = `像素太多: ${totalPixels.toLocaleString()} > 8,294,400`;
+    msgEl.style.color = 'var(--danger)';
+    return false;
+  }
+
+  // All valid - show summary
+  msgEl.textContent = `✓ 有效: ${height}×${width} (${(totalPixels/1000000).toFixed(2)}M像素, 比例${ratio.toFixed(2)}:1)`;
+  msgEl.style.color = 'var(--success)';
+  return true;
+}
+
+function getSize() {
+  const select = document.getElementById('sizeSelect');
+  if (select.value === 'custom') {
+    const width = parseInt(document.getElementById('customWidth').value) || 0;
+    const height = parseInt(document.getElementById('customHeight').value) || 0;
+    if (validateCustomSize()) {
+      return `${width}x${height}`;
+    }
+    return null; // Invalid custom size
+  }
+  return select.value; // "auto" or preset like "1024x1024"
+}
+
+// Endpoint management
+const TEST_TIMEOUT = 5000; // 5秒超时熔断
+
+async function testEndpoint(endpoint) {
+  // Get base URL from either images_generations or responses URL
+  let baseUrl = endpoint.url?.replace('/v1/images/generations', '') || endpoint.responsesUrl?.replace('/v1/responses', '') || '';
+  const start = Date.now();
+  try {
+    // Use AbortSignal.timeout for timeout control
+    await fetch(baseUrl, {
+      method: 'HEAD',
+      mode: 'no-cors',
+      signal: AbortSignal.timeout(TEST_TIMEOUT)
+    });
+    return Date.now() - start;
+  } catch (e) {
+    if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+      log(`${endpoint.name} 响应超时 (>${TEST_TIMEOUT}ms)`, 'warning');
+    }
+    return 9999; // 超时熔断
+  }
+}
+
+async function testAllEndpoints(isStartup = false) {
+  const status = document.getElementById('endpointStatus');
+
+  currentEndpoint = API_ENDPOINTS[0];
+
+  // 启动时：立即加载固定接口，不阻塞用户操作
+  // 点击按钮时：保持当前线路，只显示测试状态
+  if (isStartup) {
+    status.textContent = `后台测活中...`;
+    status.style.color = 'var(--text-muted)';
+    updateApiKeyHint();
+    log(`启动完成，固定接口已加载: ${API_BASE_URL}`, 'info');
+  } else {
+    status.textContent = `测试中...`;
+    status.style.color = 'var(--text-muted)';
+    log('用户触发接口连通性测试...', 'info');
+  }
+
+  // 后台异步测试固定接口，不阻塞主线程
+  const testPromise = async () => {
+    currentEndpoint.delay = await testEndpoint(currentEndpoint);
+
+    // 保留函数调用以兼容旧逻辑；当前界面已经没有线路下拉
+    rebuildEndpointSelect();
+
+    if (currentEndpoint.delay < 9999) {
+      // 更新状态显示
+      const delayText = currentEndpoint.delay >= 9999 ? '>5000ms' : `${currentEndpoint.delay}ms`;
+      status.textContent = delayText;
+      status.style.color = currentEndpoint.delay < 200 ? 'var(--success)' : currentEndpoint.delay < 500 ? 'var(--accent)' : 'var(--warning)';
+    } else {
+      status.textContent = `连接超时`;
+      status.style.color = 'var(--danger)';
+      log('固定接口连通性检测超时，请检查网络连接或服务状态', 'error');
+      showToast('接口连接超时，请检查网络');
+    }
+
+    // 保存当前选择
+    await setConfig('endpoint', 0);
+
+    log(`接口检测完成: ${API_BASE_URL} = ${currentEndpoint.delay >= 9999 ? '>5000ms' : currentEndpoint.delay + 'ms'}`, 'info');
+  };
+
+  // 不等待，直接在后台执行
+  testPromise();
+}
+
+async function selectEndpoint(idx) {
+  await saveCurrentKey();
+  currentEndpoint = API_ENDPOINTS[0];
+  await setConfig('endpoint', 0);
+
+  // Auto-switch to images_generations for the fixed endpoint (recommended)
+  currentApiType = 'images_generations';
+  document.getElementById('apiTypeSelect').value = 'images_generations';
+  await setConfig('apiType', 'images_generations');
+  updateApiTypeHint();
+
+  const status = document.getElementById('endpointStatus');
+  const delayText = currentEndpoint.delay >= 9999 ? '>5000ms' : `${currentEndpoint.delay}ms`;
+  status.textContent = delayText;
+  status.style.color = currentEndpoint.delay < 200 ? 'var(--success)' : currentEndpoint.delay < 500 ? 'var(--accent)' : 'var(--warning)';
+
+  updateApiKeyHint();
+  renderCustomEndpointList();
+
+  log(`使用固定接口: ${API_BASE_URL}`, 'info');
+}
+
+// Toast notifications
+function showToast(message, type = 'info') {
+  const toast = document.getElementById('toast');
+  toast.textContent = message;
+  toast.className = 'toast show';
+  setTimeout(() => toast.classList.remove('show'), 2500);
+}
+
+// Generate images - now adds task to queue instead of blocking
+async function generate() {
+  log('点击生成按钮', 'info');
+
+  const apiKey = await getKey();
+  if (!apiKey) {
+    log('缺少 API Key，请求中止', 'error');
+    showToast('请输入 API Key', 'error');
+    return;
+  }
+
+  const prompt = document.getElementById('prompt').value.trim();
+  if (!prompt) {
+    log('缺少 Prompt，请求中止', 'error');
+    showToast('请输入 Prompt', 'error');
+    return;
+  }
+
+  const count = Math.min(1000, Math.max(1, parseInt(document.getElementById('count').value) || 1));
+  const concurrency = Math.min(100, Math.max(1, parseInt(document.getElementById('concurrency').value) || 5));
+  const size = getSize();
+  const quality = document.getElementById('quality').value;
+  const moderation = document.getElementById('moderation').value;
+
+  if (!size) {
+    log('尺寸参数无效，请求中止', 'error');
+    showToast('请设置有效的尺寸参数', 'error');
+    return;
+  }
+
+  if (autoLocalSaveEnabled) {
+    const pathError = validateLocalSavePath(localSavePath);
+    if (pathError) {
+      log(`本地保存位置无效：${pathError}`, 'error');
+      showToast('请填写有效的本地保存位置', 'error');
+      await updateLocalSaveStatus();
+      return;
+    }
+
+    if (!localSaveDirectoryHandle) {
+      log('已开启自动本地保存，但尚未授权根目录，请求中止', 'error');
+      showToast('请先授权本地保存根目录', 'error');
+      await updateLocalSaveStatus();
+      return;
+    }
+
+    const hasPermission = await ensureLocalDirectoryPermission();
+    if (!hasPermission) {
+      log('本地保存根目录未授权，请求中止', 'error');
+      showToast('请授权本地保存根目录', 'error');
+      return;
+    }
+  }
+
+  // Create task and add to queue
+  const task = createTask(prompt, {
+    count,
+    concurrency,
+    size,
+    quality,
+    moderation,
+    refImages: [...refImages],
+    endpoint: currentEndpoint,
+    apiKey,
+    apiType: currentApiType
+  });
+
+  showToast(`任务 #${task.id} 已添加到队列`);
+  // 显示实际会使用的接口类型
+  const actualApiType = !currentEndpoint.isCustom
+    ? (refImages.length > 0 ? 'images_edit' : 'images_generations')
+    : currentApiType;
+  log(`任务 #${task.id}: Prompt="${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}", 数量=${count}, 并发=${concurrency}, 接口=${actualApiType}`, 'info');
+
+  // Start thread pool if not running
+  if (!globalThreadPool) {
+    startThreadPool();
+  }
+}
+
+// Thread Pool Manager - Global concurrency pool
+let globalActiveCount = 0;
+let globalMaxConcurrency = 5;
+
+function startThreadPool() {
+  if (globalThreadPool) return; // Already running
+
+  log('线程池管理器启动 (全局并发池模式)', 'info');
+  globalThreadPool = true;
+  let lastIdleLog = 0;
+
+  async function processQueue() {
+    while (true) {
+      // Update global max concurrency from all active tasks
+      const activeTasks = taskQueue.filter(t => t.status === 'running' || t.status === 'pending');
+      if (activeTasks.length > 0) {
+        globalMaxConcurrency = Math.max(...activeTasks.map(t => t.params.concurrency), 1);
+      }
+
+      // Check if we have available slots
+      if (globalActiveCount < globalMaxConcurrency) {
+        // Find a running task with pending requests
+        const runnableTask = taskQueue.find(t =>
+          t.status === 'running' &&
+          t.remainingRequests > 0 &&
+          !t.abortController.signal.aborted
+        );
+
+        if (runnableTask) {
+          globalActiveCount++;
+          executeOneRequest(runnableTask).finally(() => {
+            globalActiveCount--;
+          });
+          continue; // Immediately try next slot
+        }
+
+        // No running task with pending requests, start a pending task
+        const pendingTask = taskQueue.find(t => t.status === 'pending');
+        if (pendingTask) {
+          startTask(pendingTask);
+          continue;
+        }
+      }
+
+      // No available slots or no pending work
+      const hasRunning = taskQueue.some(t => t.status === 'running');
+      if (!hasRunning && globalActiveCount === 0) {
+        const now = Date.now();
+        if (now - lastIdleLog > 30000) {
+          log('线程池待机中，等待新任务...', 'info');
+          lastIdleLog = now;
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } else {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+  }
+
+  processQueue();
+}
+
+function startTask(task) {
+  task.status = 'running';
+  task.remainingRequests = task.params.count;
+  task.startedAt = Date.now();
+  log(`任务 #${task.id} 开始执行，目标: ${task.params.count} 张，并发上限: ${task.params.concurrency}`, 'info');
+  renderTaskQueue();
+}
+
+async function executeOneRequest(task) {
+  if (task.remainingRequests <= 0 || task.abortController.signal.aborted) {
+    finalizeTask(task);
+    return;
+  }
+
+  const requestIndex = task.params.count - task.remainingRequests;
+  const displayIndex = requestIndex + 1;
+  task.remainingRequests--;
+
+  try {
+    const result = await makeRequestForTask(task, requestIndex, displayIndex);
+    task.progress.completed++;
+
+    if (result.cancelled) {
+      log(`任务 #${task.id} 请求 #${displayIndex} 已取消`, 'warning');
+    } else if (result.success) {
+      task.progress.success++;
+      task.results.push(result.src);
+      showCurrentImage(result.src, task.results.length, task.id);
+      await persistGeneratedImageToLocal(result.src, task, displayIndex);
+      log(`任务 #${task.id} 请求 #${displayIndex} 成功`, 'success');
+    } else {
+      task.progress.failed++;
+    }
+
+    renderTaskQueue();
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      task.progress.completed++;
+      task.progress.failed++;
+      log(`任务 #${task.id} 请求 #${displayIndex}: ${e.message}`, 'error');
+      renderTaskQueue();
+    }
+  }
+
+  // Check if task is complete
+  if (task.remainingRequests <= 0 && task.progress.completed >= task.params.count) {
+    finalizeTask(task);
+  } else if (task.abortController.signal.aborted && task.remainingRequests > 0) {
+    finalizeTask(task);
+  }
+}
+
+function finalizeTask(task) {
+  if (task.status !== 'running') return; // Already finalized
+
+  const elapsed = ((Date.now() - task.startedAt) / 1000).toFixed(2);
+  const total = task.params.count;
+
+  if (task.abortController.signal.aborted) {
+    updateTaskStatus(task.id, 'cancelled');
+    log(`任务 #${task.id} 已取消: ${task.progress.success}/${total} 成功`, 'warning');
+  } else if (task.progress.success > 0) {
+    updateTaskStatus(task.id, 'completed');
+    log(`任务 #${task.id} 完成: ${task.progress.success}/${total} 成功, 耗时 ${elapsed}s`, 'success');
+    saveHistory(task.prompt, task.params.size, task.params.refImages, task.results);
+  } else {
+    updateTaskStatus(task.id, 'failed');
+    log(`任务 #${task.id} 失败: 0/${total} 成功`, 'error');
+  }
+}
+
+async function makeRequestForTask(task, requestIndex, displayIndex) {
+  if (task.abortController.signal.aborted) {
+    return { success: false, cancelled: true };
+  }
+
+  const { size, quality, moderation, refImages, endpoint, apiKey, apiType } = task.params;
+  // 默认线路强制使用 generations/edit 接口，有参考图时用 edit
+  let taskApiType = apiType || currentApiType;
+  if (!endpoint.isCustom) {
+    // 默认线路：无参考图用 generations，有参考图用 edit
+    taskApiType = (refImages && refImages.length > 0) ? 'images_edit' : 'images_generations';
+  }
+  const prompt = task.prompt;
+  let requestUrl = '';
+  let requestBody = null;
+  let requestHeaders = {};
+
+  try {
+    requestUrl = getEndpointUrl(endpoint, taskApiType);
+    const modelId = endpoint.model || 'gpt-image-2';
+    requestHeaders = {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    };
+
+    // Build request based on API type
+    if (taskApiType === 'responses') {
+      requestBody = {
+        model: modelId,
+        input: prompt,
+        tools: [{
+          type: 'image_generation',
+          size: size,
+          quality: quality,
+          moderation: moderation
+        }]
+      };
+      if (refImages && refImages.length > 0) {
+        requestBody.tools[0].reference_images = refImages.map(img => {
+          const match = img.match(/^data:image\/[^;]+;base64,(.+)$/);
+          return match ? match[1] : img.split(',')[1] || img;
+        });
+      }
+    } else if (taskApiType === 'chat_completions') {
+      let messageContent = [];
+      if (refImages && refImages.length > 0) {
+        refImages.forEach(img => {
+          messageContent.push({
+            type: 'image_url',
+            image_url: { url: img }
+          });
+        });
+      }
+      messageContent.push({
+        type: 'text',
+        text: prompt
+      });
+      requestBody = {
+        model: modelId,
+        messages: [{
+          role: 'user',
+          content: messageContent.length > 1 ? messageContent : prompt
+        }],
+        size: size,
+        quality: quality
+      };
+      if (!refImages || refImages.length === 0) {
+        requestBody.messages = [{
+          role: 'user',
+          content: prompt
+        }];
+      }
+    } else if (taskApiType === 'images_edit') {
+      // images/edits 接口：使用 FormData multipart/form-data 格式
+      const formData = new FormData();
+      formData.append('model', modelId);
+      formData.append('prompt', prompt);
+      formData.append('n', '1');
+      formData.append('size', size);
+      if (quality) formData.append('quality', quality);
+      if (moderation) formData.append('moderation', moderation);
+
+      // 将 base64 参考图转换为 Blob 并用 image[] 参数上传
+      if (refImages && refImages.length > 0) {
+        refImages.forEach((img, idx) => {
+          // 从 base64 提取数据
+          const match = img.match(/^data:image\/([^;]+);base64,(.+)$/);
+          const mimeType = match ? match[1] : 'png';
+          const base64Data = match ? match[2] : img.split(',')[1] || img;
+          // base64 转 Blob
+          const byteChars = atob(base64Data);
+          const byteNumbers = new Array(byteChars.length);
+          for (let i = 0; i < byteChars.length; i++) {
+            byteNumbers[i] = byteChars.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          const blob = new Blob([byteArray], { type: `image/${mimeType}` });
+          formData.append('image[]', blob, `reference-${idx}.${mimeType}`);
+        });
+      }
+      requestBody = formData;
+      // FormData 不需要手动设置 Content-Type，浏览器会自动设置 multipart/form-data
+      requestHeaders = {
+        'Authorization': `Bearer ${apiKey}`
+      };
+    } else {
+      // images_generations 接口
+      requestBody = {
+        model: modelId,
+        prompt: prompt,
+        n: 1,
+        size: size,
+        quality: quality,
+        moderation: moderation
+      };
+      if (refImages && refImages.length > 0) {
+        requestBody.reference_images = refImages.map(img => {
+          const match = img.match(/^data:image\/[^;]+;base64,(.+)$/);
+          return match ? match[1] : img.split(',')[1] || img;
+        });
+      }
+    }
+
+    const res = await fetch(requestUrl, {
+      method: 'POST',
+      headers: requestHeaders,
+      body: requestBody instanceof FormData ? requestBody : JSON.stringify(requestBody),
+      signal: task.abortController.signal
+    });
+
+    if (!res.ok) {
+      let errorDetail = '';
+      let errorData = null;
+      try {
+        errorData = await res.json();
+        errorDetail = errorData.error?.message || errorData.message || '';
+      } catch {}
+      log(`任务 #${task.id} 请求 #${displayIndex}: HTTP ${res.status} ${errorDetail}`, 'error');
+      showParseErrorModal({
+        taskId: task.id,
+        requestIndex: displayIndex,
+        requestUrl,
+        requestBody: serializeRequestBodyForDebug(requestBody),
+        responseBody: errorData || {
+          status: res.status,
+          statusText: res.statusText,
+          message: errorDetail || 'HTTP 请求失败'
+        }
+      });
+      return { success: false };
+    }
+
+    const data = await res.json();
+    if (data.error) {
+      log(`任务 #${task.id} 请求 #${displayIndex}: ${data.error.message}`, 'error');
+      return { success: false };
+    }
+
+    // Parse response
+    let imageSrc = null;
+
+    if (taskApiType === 'responses') {
+      if (data.output && Array.isArray(data.output)) {
+        const imageOutput = data.output.find(o => o.type === 'image' || o.type === 'image_generation_call');
+        if (imageOutput?.content) {
+          const imageData = imageOutput.content.find(c => c.type === 'image_url');
+          if (imageData?.image_url?.url) {
+            imageSrc = imageData.image_url.url;
+          }
+        }
+      }
+      if (!imageSrc && data.result) {
+        imageSrc = data.result;
+      }
+      if (!imageSrc && data.data?.[0]) {
+        if (data.data[0].b64_json) {
+          imageSrc = 'data:image/png;base64,' + data.data[0].b64_json;
+        } else if (data.data[0].url) {
+          imageSrc = data.data[0].url;
+        }
+      }
+    } else if (taskApiType === 'chat_completions') {
+      if (data.choices && Array.isArray(data.choices) && data.choices.length > 0) {
+        const choice = data.choices[0];
+        const messageContent = choice?.message?.content;
+
+        if (messageContent) {
+          if (typeof messageContent === 'string') {
+            const trimmedContent = messageContent.trim();
+            if (trimmedContent.startsWith('http://') || trimmedContent.startsWith('https://') || trimmedContent.startsWith('data:image')) {
+              imageSrc = trimmedContent;
+            }
+            if (!imageSrc) {
+              const mdMatch = trimmedContent.match(/!\[.*?\]\((https?:\/\/[^)\s]+|data:image[^)\s]+)\)/);
+              if (mdMatch) {
+                imageSrc = mdMatch[1];
+              }
+            }
+            if (!imageSrc) {
+              const urlMatch = trimmedContent.match(/(https?:\/\/[^\s<>"'\)\]]+|data:image\/[^;]+;base64,[A-Za-z0-9+/=]+)/);
+              if (urlMatch) {
+                imageSrc = urlMatch[1];
+              }
+            }
+          }
+          if (!imageSrc && Array.isArray(messageContent)) {
+            const imagePart = messageContent.find(part =>
+              part.type === 'image_url' && part.image_url?.url
+            );
+            if (imagePart?.image_url?.url) {
+              imageSrc = imagePart.image_url.url;
+            }
+          }
+        }
+      }
+      if (!imageSrc && data.data?.[0]) {
+        if (data.data[0].b64_json) {
+          imageSrc = 'data:image/png;base64,' + data.data[0].b64_json;
+        } else if (data.data[0].url) {
+          imageSrc = data.data[0].url;
+        }
+      }
+    } else {
+      if (data.data?.[0]?.b64_json) {
+        imageSrc = 'data:image/png;base64,' + data.data[0].b64_json;
+      } else if (data.data?.[0]?.url) {
+        imageSrc = data.data[0].url;
+      }
+    }
+
+    if (imageSrc) {
+      // 如果是 URL，立即转换为 base64，避免跨域下载问题
+      if (imageSrc.startsWith('http://') || imageSrc.startsWith('https://')) {
+        log(`任务 #${task.id} 请求 #${displayIndex}: 尝试转换 URL 为 base64...`, 'info');
+        const converted = await convertUrlToBase64(imageSrc);
+        if (converted) {
+          log(`URL 转 base64 成功`, 'success');
+          return { success: true, src: converted };
+        } else {
+          log(`URL 转 base64 失败，保留原 URL（可能受 CORS 限制）`, 'warning');
+          return { success: true, src: imageSrc };
+        }
+      }
+      return { success: true, src: imageSrc };
+    }
+
+    // Parse failed
+    const errorInfo = {
+      taskId: task.id,
+      requestIndex: displayIndex,
+      requestUrl: requestUrl,
+      requestBody: serializeRequestBodyForDebug(requestBody),
+      responseBody: data
+    };
+    log(`任务 #${task.id} 请求 #${displayIndex}: 无法解析响应数据`, 'warning');
+    showParseErrorModal(errorInfo);
+    return { success: false };
+
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      return { success: false, cancelled: true };
+    }
+
+    // 网络错误 - 弹窗显示完整请求信息 + 排查建议
+    const errorInfo = {
+      taskId: task.id,
+      requestIndex: displayIndex,
+      requestUrl,
+      requestBody: serializeRequestBodyForDebug(requestBody),
+      responseBody: {
+        error: e.message,
+        errorType: e.name,
+        suggestions: [
+          '1. 检查 API Key 是否正确',
+          '2. 检查固定接口地址是否可访问',
+          '3. 尝试在 Postman 中测试此请求',
+          '4. 检查浏览器控制台是否有 CORS 错误',
+          '5. 确认服务端已允许当前网页域名跨域请求'
+        ]
+      }
+    };
+    log(`任务 #${task.id} 请求 #${displayIndex}: ${e.message} (${e.name})`, 'error');
+    showParseErrorModal(errorInfo);
+    return { success: false };
+  }
+}
+
+// 尝试多种方式将 URL 图片转换为 base64
+async function convertUrlToBase64(url) {
+  // 方法1: 直接 fetch（可能受 CORS 限制）
+  try {
+    const response = await fetch(url);
+    const blob = await response.blob();
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    if (base64) return base64;
+  } catch (e) {
+    // fetch 失败，尝试其他方法
+  }
+
+  // 方法2: 使用 img + canvas（需要服务端设置 CORS 允许）
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous'; // 请求 CORS 权限
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          const dataUrl = canvas.toDataURL('image/png');
+          resolve(dataUrl);
+        } catch (e) {
+          reject(e);
+        }
+      };
+      img.onerror = () => reject(new Error('图片加载失败'));
+      img.src = url;
+      // 设置超时
+      setTimeout(() => reject(new Error('转换超时')), 10000);
+    });
+    if (base64) return base64;
+  } catch (e) {
+    // canvas 方法也失败
+  }
+
+  // 方法3: 不设置 crossOrigin，尝试 canvas（可能因为 tainted canvas 无法导出）
+  // 这通常不会成功，但作为最后尝试
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          // tainted canvas 会抛出错误
+          const dataUrl = canvas.toDataURL('image/png');
+          resolve(dataUrl);
+        } catch (e) {
+          reject(e);
+        }
+      };
+      img.onerror = () => reject(new Error('图片加载失败'));
+      img.src = url;
+      setTimeout(() => reject(new Error('转换超时')), 10000);
+    });
+    if (base64) return base64;
+  } catch (e) {
+    // 所有方法都失败
+  }
+
+  return null; // 无法转换
+}
+
+function showCurrentImage(src, index, taskId) {
+  const area = document.getElementById('currentImageArea');
+  area.innerHTML = '';
+
+  const img = document.createElement('img');
+  img.className = 'current-image';
+  img.src = src;
+  img.alt = `Generated image ${index}`;
+  img.ondblclick = () => openLightbox(src);
+
+  const actions = document.createElement('div');
+  actions.className = 'current-actions';
+
+  const dlBtn = document.createElement('button');
+  dlBtn.textContent = '下载';
+  dlBtn.onclick = () => downloadImage(src, `ai-image-${Date.now()}.png`);
+
+  const cpBtn = document.createElement('button');
+  cpBtn.textContent = '复制';
+  cpBtn.onclick = () => copyImage(src);
+
+  actions.append(dlBtn, cpBtn);
+  area.append(img, actions);
+
+  document.getElementById('outputTitle').textContent = `任务 #${taskId}`;
+  document.getElementById('outputInfo').textContent = `第 ${index} 张`;
+}
+
+// Lightbox
+function openLightbox(src) {
+  log('打开图片预览 (Lightbox)', 'info');
+  document.getElementById('lbImg').src = src;
+  document.getElementById('lightbox').classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeLightbox() {
+  log('关闭图片预览', 'info');
+  document.getElementById('lightbox').classList.remove('active');
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (document.getElementById('lightbox').classList.contains('active')) {
+      closeLightbox();
+    }
+  }
+});
+
+// Download & Copy
+async function downloadImage(src, name) {
+  log(`触发下载: ${name}`, 'info');
+
+  // 如果是 URL，先尝试转换为 base64
+  if (src.startsWith('http://') || src.startsWith('https://')) {
+    log('尝试转换 URL 图片...', 'info');
+    const converted = await convertUrlToBase64(src);
+    if (converted) {
+      src = converted;
+      log('URL 已转换为 base64', 'success');
+    }
+  }
+
+  try {
+    // 先 fetch 获取图片数据，解决跨域 URL 直接跳转的问题
+    const response = await fetch(src);
+    const blob = await response.blob();
+
+    // 创建 Blob URL 进行下载
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    // 释放 Blob URL
+    URL.revokeObjectURL(blobUrl);
+
+    log('下载任务已启动', 'success');
+    showToast('图片已开始下载');
+  } catch (err) {
+    log(`下载失败: ${err.message}`, 'error');
+    showToast('下载失败：图片受 CORS 限制，请右键另存为或联系服务端返回 base64 数据', 'error');
+  }
+}
+
+async function copyImage(src) {
+  log('尝试复制图片到剪贴板', 'info');
+
+  // 如果是 URL，先尝试转换为 base64
+  if (src.startsWith('http://') || src.startsWith('https://')) {
+    log('尝试转换 URL 图片...', 'info');
+    const converted = await convertUrlToBase64(src);
+    if (converted) {
+      src = converted;
+      log('URL 已转换为 base64', 'success');
+    }
+  }
+
+  try {
+    // Convert base64/data URL to Blob
+    const response = await fetch(src);
+    const blob = await response.blob();
+
+    // Write to clipboard as image
+    await navigator.clipboard.write([
+      new ClipboardItem({ 'image/png': blob })
+    ]);
+
+    log('复制成功 (PNG 格式)', 'success');
+    showToast('图片已复制到剪贴板');
+  } catch (err) {
+    log(`复制失败: ${err.message}`, 'error');
+    showToast('复制失败：图片受 CORS 限制，请右键另存为或联系服务端返回 base64 数据', 'error');
+  }
+}
+
+// Render Task Queue UI
+function renderTaskQueue() {
+  const container = document.getElementById('taskQueueContainer');
+  if (!container) return;
+
+  if (taskQueue.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:0.85rem">暂无任务</div>';
+    return;
+  }
+
+  const statusColors = {
+    pending: 'var(--text-muted)',
+    running: 'var(--accent)',
+    completed: 'var(--success)',
+    failed: 'var(--danger)',
+    cancelled: 'var(--warning)'
+  };
+
+  const statusLabels = {
+    pending: '等待中',
+    running: '生成中',
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已取消'
+  };
+
+  container.innerHTML = taskQueue.map((task, index) => {
+    const progress = task.progress;
+    const progressPercent = progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0;
+    const canMoveUp = task.status === 'pending' && index > 0 && taskQueue[index - 1].status === 'pending';
+    const canMoveDown = task.status === 'pending' && index < taskQueue.length - 1 && taskQueue[index + 1].status === 'pending';
+
+    return `
+      <div class="task-item" data-task-id="${task.id}" data-status="${task.status}">
+        <div class="task-header">
+          <div class="task-id">#${task.id}</div>
+          <div class="task-status" style="color:${statusColors[task.status]}">${statusLabels[task.status]}</div>
+          <div class="task-actions">
+            ${canMoveUp ? `<button class="task-btn" onclick="moveTask(${task.id}, 'up')" title="上移">↑</button>` : ''}
+            ${canMoveDown ? `<button class="task-btn" onclick="moveTask(${task.id}, 'down')" title="下移">↓</button>` : ''}
+            <button class="task-btn task-btn-delete" onclick="deleteTask(${task.id})" title="删除">×</button>
+          </div>
+        </div>
+        <div class="task-prompt">${escapeHtml(task.prompt.substring(0, 60))}${task.prompt.length > 60 ? '...' : ''}</div>
+        <div class="task-progress">
+          <div class="task-progress-bar">
+            <div class="task-progress-fill" style="width:${progressPercent}%"></div>
+          </div>
+          <div class="task-progress-text">${progress.completed}/${progress.total} (成功${progress.success}, 失败${progress.failed})</div>
+        </div>
+        <div class="task-meta">
+          ${task.params.size} · ${task.params.quality} · 并发${task.params.concurrency}
+          ${task.startedAt ? ` · 耗时${Math.round((task.completedAt || Date.now()) - task.startedAt) / 1000}s` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function clearCompletedTasks() {
+  const completedCount = taskQueue.filter(t => ['completed', 'failed', 'cancelled'].includes(t.status)).length;
+  if (completedCount === 0) {
+    showToast('没有已完成的任务');
+    return;
+  }
+
+  taskQueue = taskQueue.filter(t => !['completed', 'failed', 'cancelled'].includes(t.status));
+  renderTaskQueue();
+  log(`已清除 ${completedCount} 个已完成任务`, 'info');
+  showToast(`已清除 ${completedCount} 个任务`);
+}
+
+// History with IndexedDB
+async function saveHistory(prompt, size, refImagesData, images) {
+  log(`保存历史记录: ${images.length} 张图片`, 'info');
+
+  if (!db) {
+    log('IndexedDB 未初始化，尝试重新连接...', 'warning');
+    await initDB();
+  }
+
+  // 将 URL 图片转换为 base64，避免跨域下载问题
+  const convertedImages = await Promise.all(images.map(async (src) => {
+    if (src.startsWith('data:')) {
+      // 已经是 base64，直接返回
+      return src;
+    }
+    // 是 URL，需要转换
+    const converted = await convertUrlToBase64(src);
+    if (converted) {
+      log(`URL 图片已转换为 base64`, 'success');
+      return converted;
+    }
+    log(`URL 图片转换失败，保留原 URL`, 'warning');
+    return src; // 失败时保留原 URL
+  }));
+
+  try {
+    const tx = db.transaction([STORE_HISTORY], 'readwrite');
+    const store = tx.objectStore(STORE_HISTORY);
+
+    const entry = {
+      prompt,
+      size,
+      refImages: refImagesData || [],
+      images: convertedImages,
+      time: new Date().toLocaleString(),
+      timestamp: Date.now()
+    };
+
+    const request = store.add(entry);
+
+    request.onsuccess = () => {
+      log('历史记录已写入 IndexedDB', 'success');
+      renderHistory();
+    };
+
+    request.onerror = () => {
+      log('IndexedDB 写入失败: ' + request.error, 'error');
+    };
+
+    // Clean up old entries (keep max 100)
+    const countRequest = store.count();
+    countRequest.onsuccess = () => {
+      if (countRequest.result > 100) {
+        log(`历史记录过多 (${countRequest.result})，清理旧记录`, 'warning');
+        const deleteTx = db.transaction([STORE_HISTORY], 'readwrite');
+        const deleteStore = deleteTx.objectStore(STORE_HISTORY);
+        const index = deleteStore.index('time');
+
+        // Get all and delete oldest
+        const getAllRequest = deleteStore.getAll();
+        getAllRequest.onsuccess = () => {
+          const all = getAllRequest.result;
+          all.sort((a, b) => b.timestamp - a.timestamp);
+          const toDelete = all.slice(100);
+          toDelete.forEach(item => deleteStore.delete(item.id));
+          log(`已清理 ${toDelete.length} 条旧记录`, 'info');
+        };
+      }
+    };
+
+  } catch (e) {
+    log('保存历史记录异常: ' + e.message, 'error');
+  }
+}
+
+async function renderHistory() {
+  const grid = document.getElementById('historyGrid');
+
+  if (!db) {
+    grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:0.85rem">正在初始化数据库...</div>';
+    await initDB();
+  }
+
+  try {
+    const tx = db.transaction([STORE_HISTORY], 'readonly');
+    const store = tx.objectStore(STORE_HISTORY);
+    const request = store.getAll();
+
+    request.onsuccess = () => {
+      const history = request.result || [];
+
+      if (!history.length) {
+        grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:0.85rem">暂无历史记录</div>';
+        return;
+      }
+
+      // Sort by timestamp descending
+      history.sort((a, b) => b.timestamp - a.timestamp);
+
+      // Flatten all images
+      const allItems = [];
+      history.forEach((h, hi) => {
+        h.images?.forEach((img, ii) => {
+          allItems.push({
+            src: img,
+            prompt: h.prompt,
+            size: h.size,
+            refCount: h.refImages?.length || 0,
+            time: h.time,
+            id: h.id,
+            historyIndex: hi
+          });
+        });
+      });
+
+      // Fixed 3 columns for left-right waterfall
+      const numCols = 3;
+
+      // Create columns for left-right waterfall
+      const columns = new Array(numCols).fill(0); // Track column heights
+      const columnDivs = [];
+      for (let i = 0; i < numCols; i++) {
+        columnDivs.push(document.createElement('div'));
+        columnDivs[i].className = 'masonry-column';
+      }
+
+      // Distribute images to shortest column (left-right priority waterfall)
+      allItems.forEach((item) => {
+        // Find shortest column
+        const shortestIdx = columns.indexOf(Math.min(...columns));
+
+        const itemDiv = document.createElement('div');
+        itemDiv.className = 'masonry-item';
+        itemDiv.onclick = () => loadHistoryImage(item.src, item.id);
+        itemDiv.ondblclick = () => openLightbox(item.src);
+
+        // Delete button
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'delete-btn';
+        deleteBtn.innerHTML = '✕';
+        deleteBtn.title = '删除此图片';
+        deleteBtn.onclick = (e) => {
+          e.stopPropagation();
+          deleteHistoryItem(item.id, itemDiv);
+        };
+
+        const img = document.createElement('img');
+        img.src = item.src;
+        img.alt = 'History image';
+        img.loading = 'lazy';
+        img.onload = () => {
+          // Update column height estimate after image loads
+          columns[shortestIdx] += img.naturalHeight / img.naturalWidth * 100;
+        };
+
+        const overlay = document.createElement('div');
+        overlay.className = 'overlay';
+
+        const info = document.createElement('div');
+        info.className = 'info';
+        info.innerHTML = `
+          <p>${escapeHtml(item.prompt.substring(0, 30))}${item.prompt.length > 30 ? '...' : ''}</p>
+          <span>${item.size || '1024×1024'}${item.refCount > 0 ? ' · ' + item.refCount + '参考' : ''} · ${item.time}</span>
+        `;
+
+        itemDiv.append(deleteBtn, img, overlay, info);
+        columnDivs[shortestIdx].appendChild(itemDiv);
+
+        // Initial estimate based on size string (e.g., "1024x1792")
+        const sizeMatch = item.size?.match(/(\d+)[x×](\d+)/);
+        if (sizeMatch) {
+          const [, w, h] = sizeMatch;
+          columns[shortestIdx] += (parseInt(h) / parseInt(w)) * 100;
+        } else {
+          columns[shortestIdx] += 100; // Default square estimate
+        }
+      });
+
+      grid.innerHTML = '';
+      columnDivs.forEach(col => grid.appendChild(col));
+
+      log(`历史瀑布流渲染完成: ${allItems.length} 张图片 (${numCols}列, 来自 ${history.length} 条记录)`, 'info');
+    };
+
+    request.onerror = () => {
+      log('读取历史记录失败: ' + request.error, 'error');
+      grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger);font-size:0.85rem">读取失败</div>';
+    };
+
+  } catch (e) {
+    log('渲染历史记录异常: ' + e.message, 'error');
+    grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger);font-size:0.85rem">渲染异常</div>';
+  }
+}
+
+async function loadHistoryImage(src, historyId) {
+  if (!db) await initDB();
+
+  try {
+    const tx = db.transaction([STORE_HISTORY], 'readonly');
+    const store = tx.objectStore(STORE_HISTORY);
+    const request = store.get(historyId);
+
+    request.onsuccess = () => {
+      const entry = request.result;
+      if (!entry) {
+        log('未找到历史记录 #' + historyId, 'warning');
+        return;
+      }
+
+      log(`从历史加载图片 ID=${historyId}`, 'info');
+
+      // Show in current image area (only display, no parameter fill)
+      const area = document.getElementById('currentImageArea');
+      area.innerHTML = '';
+
+      const img = document.createElement('img');
+      img.className = 'current-image';
+      img.src = src;
+      img.alt = 'History image';
+      img.ondblclick = () => openLightbox(src);
+
+      const actions = document.createElement('div');
+      actions.className = 'current-actions';
+
+      const dlBtn = document.createElement('button');
+      dlBtn.textContent = '下载';
+      dlBtn.onclick = () => downloadImage(src, `ai-image-${Date.now()}.png`);
+
+      const cpBtn = document.createElement('button');
+      cpBtn.textContent = '复制';
+      cpBtn.onclick = () => copyImage(src);
+
+      const reuseBtn = document.createElement('button');
+      reuseBtn.textContent = '复用参数';
+      reuseBtn.style.background = 'rgba(0,229,160,0.3)';
+      reuseBtn.onclick = () => applyHistoryParams(historyId);
+
+      actions.append(dlBtn, cpBtn, reuseBtn);
+      area.append(img, actions);
+
+      document.getElementById('outputTitle').textContent = '历史记录';
+      document.getElementById('outputInfo').textContent = entry.time;
+
+      showToast('已加载历史图片');
+      log('历史图片已显示在当前区域', 'success');
+    };
+
+    request.onerror = () => {
+      log('读取历史记录失败: ' + request.error, 'error');
+    };
+
+  } catch (e) {
+    log('加载历史图片异常: ' + e.message, 'error');
+  }
+}
+
+async function applyHistoryParams(historyId) {
+  if (!db) await initDB();
+
+  try {
+    const tx = db.transaction([STORE_HISTORY], 'readonly');
+    const store = tx.objectStore(STORE_HISTORY);
+    const request = store.get(historyId);
+
+    request.onsuccess = () => {
+      const entry = request.result;
+      if (!entry) {
+        log('未找到历史记录 #' + historyId, 'warning');
+        showToast('未找到历史参数');
+        return;
+      }
+
+      log(`复用历史参数 ID=${historyId}`, 'info');
+
+      // Apply prompt
+      if (entry.prompt) {
+        document.getElementById('prompt').value = entry.prompt;
+        log(`已填充 Prompt: "${entry.prompt.substring(0, 30)}..."`, 'success');
+      }
+
+      // Apply size
+      if (entry.size) {
+        const sizeSelect = document.getElementById('sizeSelect');
+        // Check if it's a preset size
+        const presetOption = sizeSelect.querySelector(`option[value="${entry.size}"]`);
+        if (presetOption) {
+          sizeSelect.value = entry.size;
+          document.getElementById('customSizeInputs').style.display = 'none';
+        } else if (entry.size !== 'auto') {
+          // It's a custom size - parse it and fill custom inputs
+          sizeSelect.value = 'custom';
+          document.getElementById('customSizeInputs').style.display = 'block';
+          const sizeMatch = entry.size.match(/(\d+)[x×](\d+)/);
+          if (sizeMatch) {
+            document.getElementById('customWidth').value = parseInt(sizeMatch[1]);
+            document.getElementById('customHeight').value = parseInt(sizeMatch[2]);
+            validateCustomSize();
+          }
+        } else {
+          sizeSelect.value = 'auto';
+          document.getElementById('customSizeInputs').style.display = 'none';
+        }
+        log(`已设置尺寸: ${entry.size}`, 'success');
+      }
+
+      // Apply reference images
+      if (entry.refImages && entry.refImages.length > 0) {
+        refImages = [...entry.refImages];
+        renderRefPreview();
+        log(`已加载 ${entry.refImages.length} 张参考图`, 'success');
+      } else {
+        clearRefImages();
+      }
+
+      showToast('已应用历史参数');
+      log('历史参数已应用到生成配置', 'success');
+
+      // Scroll to top to see the config
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+
+    request.onerror = () => {
+      log('读取历史参数失败: ' + request.error, 'error');
+      showToast('读取失败');
+    };
+
+  } catch (e) {
+    log('应用历史参数异常: ' + e.message, 'error');
+    showToast('应用失败');
+  }
+}
+
+async function deleteHistoryItem(historyId, itemElement) {
+  if (!db) {
+    showToast('数据库未初始化');
+    return;
+  }
+
+  // 确认删除
+  if (!confirm('确定要删除此历史记录吗？')) {
+    return;
+  }
+
+  log(`删除历史记录 ID=${historyId}`, 'warning');
+
+  try {
+    const tx = db.transaction([STORE_HISTORY], 'readwrite');
+    const store = tx.objectStore(STORE_HISTORY);
+    const request = store.delete(historyId);
+
+    request.onsuccess = () => {
+      log('历史记录已删除', 'success');
+
+      // 添加删除动画
+      if (itemElement) {
+        itemElement.style.transition = 'all 0.3s ease';
+        itemElement.style.opacity = '0';
+        itemElement.style.transform = 'scale(0.8)';
+        setTimeout(() => {
+          itemElement.remove();
+          // 检查是否还有历史记录
+          const grid = document.getElementById('historyGrid');
+          if (grid.querySelectorAll('.masonry-item').length === 0) {
+            grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:0.85rem">暂无历史记录</div>';
+          }
+        }, 300);
+      } else {
+        renderHistory();
+      }
+
+      showToast('已删除');
+    };
+
+    request.onerror = () => {
+      log('删除历史记录失败: ' + request.error, 'error');
+      showToast('删除失败');
+    };
+
+  } catch (e) {
+    log('删除历史记录异常: ' + e.message, 'error');
+    showToast('删除异常');
+  }
+}
+
+function clearHistory() {
+  log('清空所有历史记录', 'warning');
+
+  if (!db) {
+    showToast('数据库未初始化');
+    return;
+  }
+
+  try {
+    const tx = db.transaction([STORE_HISTORY], 'readwrite');
+    const store = tx.objectStore(STORE_HISTORY);
+    const request = store.clear();
+
+    request.onsuccess = () => {
+      log('IndexedDB 历史记录已清空', 'success');
+      renderHistory();
+      showToast('历史记录已清空');
+    };
+
+    request.onerror = () => {
+      log('清空历史记录失败: ' + request.error, 'error');
+      showToast('清空失败');
+    };
+
+  } catch (e) {
+    log('清空历史记录异常: ' + e.message, 'error');
+    showToast('清空异常');
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// Initialize on load
+initDB().then(async () => {
+  log(`Image Generator v${APP_VERSION} (${APP_VERSION_DATE})`, 'info');
+  log('IndexedDB 初始化完成', 'success');
+  await initTheme();
+  await loadApiKey();
+  await loadApiType();
+  await loadCustomEndpoints();
+  await initLocalSaveSettings();
+  renderCustomEndpointList();
+  await testAllEndpoints(true); // 启动时测试固定接口
+  await renderHistory();
+  log('系统就绪', 'success');
+}).catch((e) => {
+  log('系统初始化失败: ' + e.message, 'error');
+});
+</script>
+</body>
+</html>
