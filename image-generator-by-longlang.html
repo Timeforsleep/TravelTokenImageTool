@@ -2420,12 +2420,11 @@ async function chooseLocalSaveDirectory() {
 
   try {
     let selectedHandle = null;
-    try {
-      selectedHandle = await pickLocalSaveDirectoryHandle();
-    } catch (e) {
-      if (!isEmbeddedBrowsingContext() || !isFrameFilePickerError(e)) throw e;
+    if (isEmbeddedBrowsingContext()) {
       log('当前页面在 iframe 中，切换到顶层授权窗口', 'warning');
       selectedHandle = await pickLocalSaveDirectoryHandleViaBridge();
+    } else {
+      selectedHandle = await pickLocalSaveDirectoryHandle();
     }
 
     localSaveDirectoryHandle = selectedHandle;
@@ -2484,7 +2483,7 @@ function pickLocalSaveDirectoryHandleViaBridge() {
     );
 
     if (!popup) {
-      reject(new Error('授权窗口被浏览器拦截，请允许弹窗后重试'));
+      reject(new Error('授权窗口被浏览器拦截，请允许弹窗；如果 iframe 使用 sandbox，请添加 allow-popups 和 allow-popups-to-escape-sandbox'));
       return;
     }
 
