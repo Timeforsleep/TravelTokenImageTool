@@ -2279,7 +2279,28 @@ function clearOldStorage() {
 
 // Local file persistence
 function isFileSystemAccessSupported() {
-  return typeof window.showDirectoryPicker === 'function';
+  return window.isSecureContext && typeof window.showDirectoryPicker === 'function';
+}
+
+function isEmbeddedBrowsingContext() {
+  try {
+    return window.self !== window.top;
+  } catch (e) {
+    return true;
+  }
+}
+
+function getLocalFilePickerUnavailableMessage() {
+  if (!window.isSecureContext) {
+    return '当前页面不是安全上下文，浏览器禁止授权本地目录。请使用 HTTPS、localhost 或 file:// 打开页面。';
+  }
+  return '当前浏览器不支持自动写入本地目录。请使用 Chrome/Edge 打开，或继续使用“下载”按钮手动保存。';
+}
+
+function formatLocalDirectoryError(error) {
+  const name = error?.name || 'Error';
+  const message = error?.message || '未知错误';
+  return `${name}: ${message}`;
 }
 
 async function initLocalSaveSettings() {
@@ -2300,7 +2321,7 @@ async function updateLocalSaveStatus() {
   if (!status) return;
 
   if (!isFileSystemAccessSupported()) {
-    status.textContent = '当前浏览器不支持自动写入本地目录。请使用 Chrome/Edge 打开，或继续使用“下载”按钮手动保存。';
+    status.textContent = getLocalFilePickerUnavailableMessage();
     return;
   }
 
@@ -2392,27 +2413,149 @@ async function ensureLocalDirectoryPermission() {
 
 async function chooseLocalSaveDirectory() {
   if (!isFileSystemAccessSupported()) {
-    showToast('当前浏览器不支持授权本地保存根目录', 'error');
+    showToast(window.isSecureContext ? '当前浏览器不支持授权本地保存根目录' : '请使用 HTTPS、localhost 或 file:// 打开页面', 'error');
     await updateLocalSaveStatus();
     return;
   }
 
   try {
-    localSaveDirectoryHandle = await window.showDirectoryPicker({
-      id: 'image-generator-output',
-      mode: 'readwrite'
-    });
+    let selectedHandle = null;
+    try {
+      selectedHandle = await pickLocalSaveDirectoryHandle();
+    } catch (e) {
+      if (!isEmbeddedBrowsingContext() || !isFrameFilePickerError(e)) throw e;
+      log('当前页面在 iframe 中，切换到顶层授权窗口', 'warning');
+      selectedHandle = await pickLocalSaveDirectoryHandleViaBridge();
+    }
+
+    localSaveDirectoryHandle = selectedHandle;
+    const hasPermission = await ensureLocalDirectoryPermission();
+    if (!hasPermission) {
+      localSaveDirectoryHandle = null;
+      await setConfig('localSaveDirectoryHandle', null);
+      log('授权本地保存根目录失败: 未获得读写权限', 'error');
+      showToast('未获得目录读写权限', 'error');
+      await updateLocalSaveStatus();
+      return;
+    }
+
     await setConfig('localSaveDirectoryHandle', localSaveDirectoryHandle);
     log(`本地保存根目录已授权: ${localSaveDirectoryHandle.name}`, 'success');
     showToast('本地保存根目录已授权');
   } catch (e) {
     if (e.name !== 'AbortError') {
-      log('授权本地保存根目录失败: ' + e.message, 'error');
-      showToast('授权根目录失败', 'error');
+      log('授权本地保存根目录失败: ' + formatLocalDirectoryError(e), 'error');
+      showToast('授权根目录失败：' + (e.message || e.name || '未知错误'), 'error');
     }
   }
 
   await updateLocalSaveStatus();
+}
+
+async function pickLocalSaveDirectoryHandle() {
+  try {
+    return await window.showDirectoryPicker({
+      id: 'image-generator-output',
+      mode: 'readwrite'
+    });
+  } catch (e) {
+    if (e.name !== 'TypeError') throw e;
+    return await window.showDirectoryPicker();
+  }
+}
+
+function isFrameFilePickerError(error) {
+  return /sub frames|iframe|cross origin/i.test(error?.message || '');
+}
+
+function getDirectoryPickerBridgeUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.set('localDirectoryPickerBridge', '1');
+  url.hash = '';
+  return url.toString();
+}
+
+function pickLocalSaveDirectoryHandleViaBridge() {
+  return new Promise((resolve, reject) => {
+    const popup = window.open(
+      getDirectoryPickerBridgeUrl(),
+      'image-generator-directory-picker',
+      'popup=yes,width=520,height=360'
+    );
+
+    if (!popup) {
+      reject(new Error('授权窗口被浏览器拦截，请允许弹窗后重试'));
+      return;
+    }
+
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      finish(null, new Error('授权窗口响应超时，请重试'));
+    }, 120000);
+    const poll = window.setInterval(() => {
+      if (popup.closed) finish(null, new Error('授权窗口已关闭'));
+    }, 500);
+
+    function finish(handle, error) {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      window.clearInterval(poll);
+      window.removeEventListener('message', handleMessage);
+      if (error) reject(error);
+      else resolve(handle);
+    }
+
+    function handleMessage(event) {
+      if (event.source !== popup) return;
+      const data = event.data || {};
+      if (data.type === 'image-generator-directory-picker-success') {
+        finish(data.handle, null);
+      } else if (data.type === 'image-generator-directory-picker-error') {
+        finish(null, new Error(data.message || '目录授权失败'));
+      }
+    }
+
+    window.addEventListener('message', handleMessage);
+    popup.focus();
+  });
+}
+
+function isLocalDirectoryPickerBridgeMode() {
+  return new URLSearchParams(window.location.search).get('localDirectoryPickerBridge') === '1';
+}
+
+function initLocalDirectoryPickerBridge() {
+  document.body.innerHTML = `
+    <main style="min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--text)">
+      <section style="width:min(420px,100%);display:flex;flex-direction:column;gap:16px;padding:24px;border:1px solid var(--border);background:var(--surface);box-shadow:var(--shadow-md)">
+        <h1 style="font-size:1.15rem;line-height:1.4">授权本地保存根目录</h1>
+        <p id="directoryPickerBridgeStatus" style="color:var(--text-secondary);font-size:0.9rem;line-height:1.6">浏览器不允许跨域 iframe 直接弹出目录选择器，请在此窗口完成授权。</p>
+        <button id="directoryPickerBridgeButton" type="button" style="height:42px;border:0;background:var(--accent);color:#06130f;font-weight:700;cursor:pointer">选择目录并授权</button>
+      </section>
+    </main>
+  `;
+
+  const status = document.getElementById('directoryPickerBridgeStatus');
+  const button = document.getElementById('directoryPickerBridgeButton');
+  button.onclick = async () => {
+    try {
+      const handle = await pickLocalSaveDirectoryHandle();
+      window.opener?.postMessage({
+        type: 'image-generator-directory-picker-success',
+        handle
+      }, '*');
+      status.textContent = '授权完成，正在返回主页面...';
+      window.setTimeout(() => window.close(), 250);
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      status.textContent = '授权失败：' + (e.message || e.name || '未知错误');
+      window.opener?.postMessage({
+        type: 'image-generator-directory-picker-error',
+        message: e.message || e.name || '未知错误'
+      }, '*');
+    }
+  };
 }
 
 async function forgetLocalSaveDirectory() {
@@ -4334,21 +4477,25 @@ function escapeHtml(str) {
 }
 
 // Initialize on load
-initDB().then(async () => {
-  log(`Image Generator v${APP_VERSION} (${APP_VERSION_DATE})`, 'info');
-  log('IndexedDB 初始化完成', 'success');
-  await initTheme();
-  await loadApiKey();
-  await loadApiType();
-  await loadCustomEndpoints();
-  await initLocalSaveSettings();
-  renderCustomEndpointList();
-  await testAllEndpoints(true); // 启动时测试固定接口
-  await renderHistory();
-  log('系统就绪', 'success');
-}).catch((e) => {
-  log('系统初始化失败: ' + e.message, 'error');
-});
+if (isLocalDirectoryPickerBridgeMode()) {
+  initLocalDirectoryPickerBridge();
+} else {
+  initDB().then(async () => {
+    log(`Image Generator v${APP_VERSION} (${APP_VERSION_DATE})`, 'info');
+    log('IndexedDB 初始化完成', 'success');
+    await initTheme();
+    await loadApiKey();
+    await loadApiType();
+    await loadCustomEndpoints();
+    await initLocalSaveSettings();
+    renderCustomEndpointList();
+    await testAllEndpoints(true); // 启动时测试固定接口
+    await renderHistory();
+    log('系统就绪', 'success');
+  }).catch((e) => {
+    log('系统初始化失败: ' + e.message, 'error');
+  });
+}
 </script>
 </body>
 </html>
