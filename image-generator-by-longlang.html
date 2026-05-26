@@ -1789,8 +1789,8 @@ select:hover{
 
 <script>
 // Version info - 更新时请同步修改
-const APP_VERSION = '2.0';
-const APP_VERSION_DATE = '2026-04-25';
+const APP_VERSION = '2.1';
+const APP_VERSION_DATE = '2026-05-10';
 
 // API endpoints configuration
 const API_BASE_URL = 'https://image.shoestravel.xin';
@@ -2421,9 +2421,10 @@ async function chooseLocalSaveDirectory() {
   try {
     let selectedHandle = null;
     if (isEmbeddedBrowsingContext()) {
-      log('当前页面在 iframe 中，切换到顶层授权窗口', 'warning');
+      log('当前页面在 iframe 中，打开顶层授权窗口处理目录选择', 'warning');
       selectedHandle = await pickLocalSaveDirectoryHandleViaBridge();
     } else {
+      log('当前页面为顶层窗口，直接请求目录授权', 'info');
       selectedHandle = await pickLocalSaveDirectoryHandle();
     }
 
@@ -2525,6 +2526,23 @@ function isLocalDirectoryPickerBridgeMode() {
 }
 
 function initLocalDirectoryPickerBridge() {
+  if (isEmbeddedBrowsingContext()) {
+    document.body.innerHTML = `
+      <main style="min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--text)">
+        <section style="width:min(460px,100%);display:flex;flex-direction:column;gap:16px;padding:24px;border:1px solid var(--border);background:var(--surface);box-shadow:var(--shadow-md)">
+          <h1 style="font-size:1.15rem;line-height:1.4">无法在 iframe 中授权目录</h1>
+          <p style="color:var(--text-secondary);font-size:0.9rem;line-height:1.6">浏览器禁止跨域 iframe 弹出本地目录选择器。请让外层 iframe 允许弹窗逃出沙箱，或把授权页作为顶层窗口打开。</p>
+          <p style="color:var(--text-muted);font-size:0.8rem;line-height:1.6">sandbox 需要包含 allow-popups 和 allow-popups-to-escape-sandbox。</p>
+        </section>
+      </main>
+    `;
+    window.opener?.postMessage({
+      type: 'image-generator-directory-picker-error',
+      message: '授权页仍在 iframe 中，浏览器禁止调用 showDirectoryPicker'
+    }, '*');
+    return;
+  }
+
   document.body.innerHTML = `
     <main style="min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--text)">
       <section style="width:min(420px,100%);display:flex;flex-direction:column;gap:16px;padding:24px;border:1px solid var(--border);background:var(--surface);box-shadow:var(--shadow-md)">
