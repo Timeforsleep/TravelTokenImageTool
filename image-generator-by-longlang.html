@@ -3517,6 +3517,446 @@ function finalizeTask(task) {
   }
 }
 
+const STREAM_PARTIAL_IMAGE_COUNT = 2;
+
+function base64ToImageSrc(value) {
+  if (typeof value !== 'string') return null;
+  const compact = value.trim().replace(/\s/g, '');
+  if (!compact) return null;
+  if (compact.startsWith('data:image')) return compact;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) return null;
+  return 'data:image/png;base64,' + compact;
+}
+
+function parseStringForImageSource(value, assumeBase64 = false) {
+  if (typeof value !== 'string') return null;
+
+  const text = value.trim();
+  if (!text) return null;
+  if (text.startsWith('data:image')) return text;
+  if (text.startsWith('http://') || text.startsWith('https://')) return text;
+
+  const mdMatch = text.match(/!\[.*?\]\((https?:\/\/[^)\s]+|data:image[^)\s]+)\)/);
+  if (mdMatch) return mdMatch[1];
+
+  const urlMatch = text.match(/(https?:\/\/[^\s<>"'\)\]]+|data:image\/[^;]+;base64,[A-Za-z0-9+/=]+)/);
+  if (urlMatch) return urlMatch[1];
+
+  return assumeBase64 && text.length > 100 ? base64ToImageSrc(text) : null;
+}
+
+function parseImageSourceFromObject(data, taskApiType, seen = new Set(), depth = 0) {
+  if (data == null || depth > 8) return null;
+
+  if (typeof data === 'string') {
+    return parseStringForImageSource(data, taskApiType !== 'chat_completions');
+  }
+
+  if (typeof data !== 'object' || seen.has(data)) return null;
+  seen.add(data);
+
+  if (Array.isArray(data)) {
+    for (const item of data) {
+      const imageSrc = parseImageSourceFromObject(item, taskApiType, seen, depth + 1);
+      if (imageSrc) return imageSrc;
+    }
+    return null;
+  }
+
+  if (data.error) return null;
+
+  if (taskApiType === 'responses' && data.output && Array.isArray(data.output)) {
+    const imageOutput = data.output.find(o => o.type === 'image' || o.type === 'image_generation_call');
+    if (imageOutput?.content) {
+      const imageData = imageOutput.content.find(c => c.type === 'image_url');
+      if (imageData?.image_url?.url) return imageData.image_url.url;
+    }
+    if (imageOutput?.result) {
+      const imageSrc = parseStringForImageSource(imageOutput.result, true);
+      if (imageSrc) return imageSrc;
+    }
+  }
+
+  if (taskApiType === 'chat_completions' && Array.isArray(data.choices)) {
+    for (const choice of data.choices) {
+      const imageSrc = parseImageSourceFromObject(choice?.message?.content || choice?.delta?.content, taskApiType, seen, depth + 1);
+      if (imageSrc) return imageSrc;
+    }
+  }
+
+  if (data.image_url) {
+    const imageSrc = typeof data.image_url === 'string'
+      ? parseStringForImageSource(data.image_url)
+      : parseStringForImageSource(data.image_url.url);
+    if (imageSrc) return imageSrc;
+  }
+
+  for (const key of ['url', 'data_url', 'output_url']) {
+    const imageSrc = parseStringForImageSource(data[key]);
+    if (imageSrc) return imageSrc;
+  }
+
+  for (const key of ['b64_json', 'image_b64', 'image_base64', 'result_b64', 'partial_image_b64', 'partial_image_base64']) {
+    const imageSrc = parseStringForImageSource(data[key], true);
+    if (imageSrc) return imageSrc;
+  }
+
+  if (typeof data.result === 'string') {
+    const imageSrc = parseStringForImageSource(data.result, true);
+    if (imageSrc) return imageSrc;
+  }
+
+  for (const key of ['response', 'data', 'output', 'content', 'message', 'delta', 'image', 'images', 'result']) {
+    if (data[key] == null) continue;
+    const imageSrc = parseImageSourceFromObject(data[key], taskApiType, seen, depth + 1);
+    if (imageSrc) return imageSrc;
+  }
+
+  return null;
+}
+
+function getStreamEventType(event) {
+  return String(event?.type || event?.event || '').toLowerCase();
+}
+
+function isPartialImageEvent(event) {
+  const type = getStreamEventType(event);
+  return type.includes('partial_image') || type.includes('image.delta');
+}
+
+function parsePartialImageFromEvent(event) {
+  if (!event || typeof event !== 'object') return null;
+  if (!isPartialImageEvent(event)) return null;
+
+  for (const key of ['partial_image_b64', 'partial_image_base64', 'partial_image', 'b64_json']) {
+    const imageSrc = parseStringForImageSource(event[key], true);
+    if (imageSrc) return imageSrc;
+  }
+
+  return parseImageSourceFromObject(event, 'images_generations');
+}
+
+function parseFinalImageFromEvent(event, taskApiType) {
+  if (!event || typeof event !== 'object') return null;
+  if (isPartialImageEvent(event)) return null;
+
+  const type = getStreamEventType(event);
+  if (!type || type.includes('completed') || type.includes('done')) {
+    return parseImageSourceFromObject(event.response || event, taskApiType);
+  }
+
+  return null;
+}
+
+function extractStreamTextDelta(event) {
+  const chunks = [];
+
+  if (Array.isArray(event?.choices)) {
+    event.choices.forEach(choice => {
+      if (typeof choice?.delta?.content === 'string') chunks.push(choice.delta.content);
+      if (typeof choice?.message?.content === 'string') chunks.push(choice.message.content);
+    });
+  }
+
+  if (typeof event?.delta === 'string') chunks.push(event.delta);
+  if (typeof event?.text === 'string' && getStreamEventType(event).includes('delta')) chunks.push(event.text);
+
+  return chunks.join('');
+}
+
+function tryParseJson(text) {
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch {
+    return { ok: false, value: null };
+  }
+}
+
+function enableStreamingRequest(body, taskApiType) {
+  const marks = {
+    enabled: false,
+    addedStream: false,
+    addedPartialImages: false,
+    partialImagesTool: null
+  };
+
+  if (body instanceof FormData) {
+    if (!body.has('stream')) {
+      body.set('stream', 'true');
+      marks.addedStream = true;
+    }
+    if (!body.has('partial_images')) {
+      body.set('partial_images', String(STREAM_PARTIAL_IMAGE_COUNT));
+      marks.addedPartialImages = true;
+    }
+    marks.enabled = true;
+    return marks;
+  }
+
+  if (!body || typeof body !== 'object') return marks;
+
+  if (body.stream !== true) {
+    body.stream = true;
+    marks.addedStream = true;
+  }
+
+  if (taskApiType === 'images_generations' && body.partial_images == null) {
+    body.partial_images = STREAM_PARTIAL_IMAGE_COUNT;
+    marks.addedPartialImages = true;
+  }
+
+  if (taskApiType === 'responses' && Array.isArray(body.tools)) {
+    const imageTool = body.tools.find(tool => tool?.type === 'image_generation');
+    if (imageTool && imageTool.partial_images == null) {
+      imageTool.partial_images = STREAM_PARTIAL_IMAGE_COUNT;
+      marks.partialImagesTool = imageTool;
+    }
+  }
+
+  marks.enabled = true;
+  return marks;
+}
+
+function disableStreamingRequest(body, marks) {
+  if (!marks?.enabled) return;
+
+  if (body instanceof FormData) {
+    if (marks.addedStream) body.delete('stream');
+    if (marks.addedPartialImages) body.delete('partial_images');
+    return;
+  }
+
+  if (!body || typeof body !== 'object') return;
+  if (marks.addedStream) delete body.stream;
+  if (marks.addedPartialImages) delete body.partial_images;
+  if (marks.partialImagesTool) delete marks.partialImagesTool.partial_images;
+}
+
+function getStreamingHeaders(headers) {
+  return {
+    ...headers,
+    'Accept': 'text/event-stream, application/x-ndjson, application/json'
+  };
+}
+
+async function readResponseBody(res) {
+  const text = await res.text();
+  const parsed = tryParseJson(text.trim());
+  return parsed.ok ? parsed.value : {
+    status: res.status,
+    statusText: res.statusText,
+    message: text || 'HTTP 请求失败'
+  };
+}
+
+function getResponseErrorMessage(data) {
+  return data?.error?.message || data?.message || data?.statusText || '';
+}
+
+function shouldRetryWithoutStreaming(status, errorData) {
+  if (![400, 406, 415, 422].includes(status)) return false;
+  const text = JSON.stringify(errorData || {}).toLowerCase();
+  return text.includes('stream') || text.includes('partial_images') || text.includes('partial image');
+}
+
+async function readImageStreamResponse(res, taskApiType, hooks = {}) {
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  const streamLikeContentType =
+    contentType.includes('text/event-stream') ||
+    contentType.includes('application/x-ndjson') ||
+    contentType.includes('application/json-seq');
+
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    const data = await readResponseBody(res);
+    return {
+      data,
+      imageSrc: parseImageSourceFromObject(data, taskApiType),
+      isStream: false,
+      eventCount: 0
+    };
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const events = [];
+  let rawText = '';
+  let lineBuffer = '';
+  let sseLines = [];
+  let sawSse = false;
+  let finalImageSrc = null;
+  let partialImageSrc = null;
+  let streamedText = '';
+  let streamError = null;
+  let shouldStop = false;
+
+  function handleStreamValue(value) {
+    if (value == null || value === '[DONE]') {
+      shouldStop = true;
+      return;
+    }
+
+    events.push(value);
+
+    if (value.error) {
+      streamError = value.error;
+      shouldStop = true;
+      return;
+    }
+
+    const partialSrc = parsePartialImageFromEvent(value);
+    if (partialSrc) {
+      partialImageSrc = partialSrc;
+      hooks.onPartialImage?.(partialSrc, {
+        eventCount: events.length,
+        eventType: getStreamEventType(value)
+      });
+      return;
+    }
+
+    const finalSrc = parseFinalImageFromEvent(value, taskApiType);
+    if (finalSrc) {
+      finalImageSrc = finalSrc;
+      hooks.onFinalImage?.(finalSrc, {
+        eventCount: events.length,
+        eventType: getStreamEventType(value)
+      });
+      shouldStop = true;
+      return;
+    }
+
+    const textDelta = extractStreamTextDelta(value);
+    if (textDelta) {
+      streamedText += textDelta;
+      const imageFromText = parseStringForImageSource(streamedText);
+      if (imageFromText) {
+        finalImageSrc = imageFromText;
+        shouldStop = true;
+      }
+    }
+  }
+
+  function handleStreamText(text) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (trimmed === '[DONE]') {
+      shouldStop = true;
+      return;
+    }
+
+    const parsed = tryParseJson(trimmed);
+    if (parsed.ok) {
+      handleStreamValue(parsed.value);
+      return;
+    }
+
+    const imageSrc = parseStringForImageSource(trimmed, true);
+    if (imageSrc) {
+      finalImageSrc = imageSrc;
+      shouldStop = true;
+    }
+  }
+
+  function flushSseEvent() {
+    if (sseLines.length === 0) return;
+
+    const dataText = sseLines
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trimStart())
+      .join('\n')
+      .trim();
+
+    sseLines = [];
+    if (dataText) handleStreamText(dataText);
+  }
+
+  function processLine(line) {
+    const trimmed = line.replace(/\r$/, '').trim();
+
+    if (!trimmed) {
+      flushSseEvent();
+      return;
+    }
+
+    if (/^(data|event|id|retry):/.test(trimmed) || trimmed.startsWith(':')) {
+      sawSse = true;
+      sseLines.push(trimmed);
+      return;
+    }
+
+    if (streamLikeContentType) {
+      handleStreamText(trimmed);
+    }
+  }
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      rawText += chunk;
+      lineBuffer += chunk;
+
+      let newlineIndex = lineBuffer.search(/\r?\n/);
+      while (newlineIndex >= 0) {
+        const line = lineBuffer.slice(0, newlineIndex);
+        const newlineLength = lineBuffer[newlineIndex] === '\r' && lineBuffer[newlineIndex + 1] === '\n' ? 2 : 1;
+        lineBuffer = lineBuffer.slice(newlineIndex + newlineLength);
+        processLine(line);
+        if (shouldStop) break;
+        newlineIndex = lineBuffer.search(/\r?\n/);
+      }
+
+      if (shouldStop) {
+        await reader.cancel();
+        break;
+      }
+    }
+  } finally {
+    const tail = decoder.decode();
+    if (tail) {
+      rawText += tail;
+      lineBuffer += tail;
+    }
+  }
+
+  if (!shouldStop && lineBuffer) processLine(lineBuffer);
+  if (!shouldStop) flushSseEvent();
+
+  const parsedWhole = tryParseJson(rawText.trim());
+  const data = streamError
+    ? { error: streamError }
+    : parsedWhole.ok
+      ? parsedWhole.value
+      : events[events.length - 1] || rawText.trim();
+  const finalFromData = data && typeof data === 'object'
+    ? parseFinalImageFromEvent(data, taskApiType)
+    : parseImageSourceFromObject(data, taskApiType);
+
+  return {
+    data,
+    imageSrc: finalImageSrc || finalFromData,
+    isStream: sawSse || streamLikeContentType || events.length > 0,
+    eventCount: events.length
+  };
+}
+
+async function finalizeImageSource(imageSrc, task, displayIndex) {
+  if (imageSrc.startsWith('http://') || imageSrc.startsWith('https://')) {
+    log(`任务 #${task.id} 请求 #${displayIndex}: 尝试转换 URL 为 base64...`, 'info');
+    const converted = await convertUrlToBase64(imageSrc);
+    if (converted) {
+      log(`URL 转 base64 成功`, 'success');
+      return { success: true, src: converted };
+    }
+
+    log(`URL 转 base64 失败，保留原 URL（可能受 CORS 限制）`, 'warning');
+    return { success: true, src: imageSrc };
+  }
+
+  return { success: true, src: imageSrc };
+}
+
 async function makeRequestForTask(task, requestIndex, displayIndex) {
   if (task.abortController.signal.aborted) {
     return { success: false, cancelled: true };
@@ -3640,20 +4080,48 @@ async function makeRequestForTask(task, requestIndex, displayIndex) {
       }
     }
 
-    const res = await fetch(requestUrl, {
+    const streamMarks = enableStreamingRequest(requestBody, taskApiType);
+    log(`任务 #${task.id} 请求 #${displayIndex}: 已启用流式生成`, 'info');
+
+    let res = await fetch(requestUrl, {
       method: 'POST',
-      headers: requestHeaders,
+      headers: streamMarks.enabled ? getStreamingHeaders(requestHeaders) : requestHeaders,
       body: requestBody instanceof FormData ? requestBody : JSON.stringify(requestBody),
       signal: task.abortController.signal
     });
 
     if (!res.ok) {
-      let errorDetail = '';
-      let errorData = null;
-      try {
-        errorData = await res.json();
-        errorDetail = errorData.error?.message || errorData.message || '';
-      } catch {}
+      const errorData = await readResponseBody(res);
+      if (streamMarks.enabled && shouldRetryWithoutStreaming(res.status, errorData)) {
+        disableStreamingRequest(requestBody, streamMarks);
+        log(`任务 #${task.id} 请求 #${displayIndex}: 接口拒绝流式参数，回退普通请求保持原功能`, 'warning');
+        res = await fetch(requestUrl, {
+          method: 'POST',
+          headers: requestHeaders,
+          body: requestBody instanceof FormData ? requestBody : JSON.stringify(requestBody),
+          signal: task.abortController.signal
+        });
+      } else {
+        const errorDetail = getResponseErrorMessage(errorData);
+        log(`任务 #${task.id} 请求 #${displayIndex}: HTTP ${res.status} ${errorDetail}`, 'error');
+        showParseErrorModal({
+          taskId: task.id,
+          requestIndex: displayIndex,
+          requestUrl,
+          requestBody: serializeRequestBodyForDebug(requestBody),
+          responseBody: errorData || {
+            status: res.status,
+            statusText: res.statusText,
+            message: errorDetail || 'HTTP 请求失败'
+          }
+        });
+        return { success: false };
+      }
+    }
+
+    if (!res.ok) {
+      const errorData = await readResponseBody(res);
+      const errorDetail = getResponseErrorMessage(errorData);
       log(`任务 #${task.id} 请求 #${displayIndex}: HTTP ${res.status} ${errorDetail}`, 'error');
       showParseErrorModal({
         taskId: task.id,
@@ -3669,98 +4137,36 @@ async function makeRequestForTask(task, requestIndex, displayIndex) {
       return { success: false };
     }
 
-    const data = await res.json();
-    if (data.error) {
-      log(`任务 #${task.id} 请求 #${displayIndex}: ${data.error.message}`, 'error');
+    let lastPreviewAt = 0;
+    const payload = await readImageStreamResponse(res, taskApiType, {
+      onPartialImage: (src, meta) => {
+        const now = Date.now();
+        if (now - lastPreviewAt > 500) {
+          showStreamingPreview(src, displayIndex, task.id, '流式预览');
+          lastPreviewAt = now;
+        }
+        log(`任务 #${task.id} 请求 #${displayIndex}: 收到 ${meta.eventType || 'partial_image'} 事件 #${meta.eventCount}`, 'info');
+      },
+      onFinalImage: (src, meta) => {
+        showStreamingPreview(src, displayIndex, task.id, '最终图');
+        log(`任务 #${task.id} 请求 #${displayIndex}: 收到 ${meta.eventType || 'completed'} 事件 #${meta.eventCount}`, 'success');
+      }
+    });
+
+    const data = payload.data;
+    if (payload.isStream) {
+      log(`任务 #${task.id} 请求 #${displayIndex}: 流式读取完成，共 ${payload.eventCount} 个事件`, 'success');
+    }
+
+    if (data?.error) {
+      const message = data.error.message || data.error;
+      log(`任务 #${task.id} 请求 #${displayIndex}: ${message}`, 'error');
       return { success: false };
     }
 
-    // Parse response
-    let imageSrc = null;
-
-    if (taskApiType === 'responses') {
-      if (data.output && Array.isArray(data.output)) {
-        const imageOutput = data.output.find(o => o.type === 'image' || o.type === 'image_generation_call');
-        if (imageOutput?.content) {
-          const imageData = imageOutput.content.find(c => c.type === 'image_url');
-          if (imageData?.image_url?.url) {
-            imageSrc = imageData.image_url.url;
-          }
-        }
-      }
-      if (!imageSrc && data.result) {
-        imageSrc = data.result;
-      }
-      if (!imageSrc && data.data?.[0]) {
-        if (data.data[0].b64_json) {
-          imageSrc = 'data:image/png;base64,' + data.data[0].b64_json;
-        } else if (data.data[0].url) {
-          imageSrc = data.data[0].url;
-        }
-      }
-    } else if (taskApiType === 'chat_completions') {
-      if (data.choices && Array.isArray(data.choices) && data.choices.length > 0) {
-        const choice = data.choices[0];
-        const messageContent = choice?.message?.content;
-
-        if (messageContent) {
-          if (typeof messageContent === 'string') {
-            const trimmedContent = messageContent.trim();
-            if (trimmedContent.startsWith('http://') || trimmedContent.startsWith('https://') || trimmedContent.startsWith('data:image')) {
-              imageSrc = trimmedContent;
-            }
-            if (!imageSrc) {
-              const mdMatch = trimmedContent.match(/!\[.*?\]\((https?:\/\/[^)\s]+|data:image[^)\s]+)\)/);
-              if (mdMatch) {
-                imageSrc = mdMatch[1];
-              }
-            }
-            if (!imageSrc) {
-              const urlMatch = trimmedContent.match(/(https?:\/\/[^\s<>"'\)\]]+|data:image\/[^;]+;base64,[A-Za-z0-9+/=]+)/);
-              if (urlMatch) {
-                imageSrc = urlMatch[1];
-              }
-            }
-          }
-          if (!imageSrc && Array.isArray(messageContent)) {
-            const imagePart = messageContent.find(part =>
-              part.type === 'image_url' && part.image_url?.url
-            );
-            if (imagePart?.image_url?.url) {
-              imageSrc = imagePart.image_url.url;
-            }
-          }
-        }
-      }
-      if (!imageSrc && data.data?.[0]) {
-        if (data.data[0].b64_json) {
-          imageSrc = 'data:image/png;base64,' + data.data[0].b64_json;
-        } else if (data.data[0].url) {
-          imageSrc = data.data[0].url;
-        }
-      }
-    } else {
-      if (data.data?.[0]?.b64_json) {
-        imageSrc = 'data:image/png;base64,' + data.data[0].b64_json;
-      } else if (data.data?.[0]?.url) {
-        imageSrc = data.data[0].url;
-      }
-    }
-
+    const imageSrc = payload.imageSrc || parseImageSourceFromObject(data, taskApiType);
     if (imageSrc) {
-      // 如果是 URL，立即转换为 base64，避免跨域下载问题
-      if (imageSrc.startsWith('http://') || imageSrc.startsWith('https://')) {
-        log(`任务 #${task.id} 请求 #${displayIndex}: 尝试转换 URL 为 base64...`, 'info');
-        const converted = await convertUrlToBase64(imageSrc);
-        if (converted) {
-          log(`URL 转 base64 成功`, 'success');
-          return { success: true, src: converted };
-        } else {
-          log(`URL 转 base64 失败，保留原 URL（可能受 CORS 限制）`, 'warning');
-          return { success: true, src: imageSrc };
-        }
-      }
-      return { success: true, src: imageSrc };
+      return await finalizeImageSource(imageSrc, task, displayIndex);
     }
 
     // Parse failed
@@ -3906,6 +4312,20 @@ function showCurrentImage(src, index, taskId) {
 
   document.getElementById('outputTitle').textContent = `任务 #${taskId}`;
   document.getElementById('outputInfo').textContent = `第 ${index} 张`;
+}
+
+function showStreamingPreview(src, requestIndex, taskId, label = '流式预览') {
+  const area = document.getElementById('currentImageArea');
+  area.innerHTML = '';
+
+  const img = document.createElement('img');
+  img.className = 'current-image';
+  img.src = src;
+  img.alt = `Streaming image ${requestIndex}`;
+
+  area.append(img);
+  document.getElementById('outputTitle').textContent = `任务 #${taskId}`;
+  document.getElementById('outputInfo').textContent = `第 ${requestIndex} 张 · ${label}`;
 }
 
 // Lightbox
