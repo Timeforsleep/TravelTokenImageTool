@@ -479,6 +479,48 @@ select:hover{
   line-height:1.5;
   word-break:break-all;
 }
+.stream-settings-card{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  padding:14px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  background:var(--surface-elevated);
+}
+.stream-toggle{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  color:var(--text-secondary);
+  font-size:0.85rem;
+  font-weight:600;
+  text-transform:none;
+  letter-spacing:0;
+}
+.stream-toggle input{
+  width:auto;
+  accent-color:var(--accent);
+}
+.stream-partial-control{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  transition:opacity var(--transition-fast);
+}
+.stream-partial-control label{
+  font-size:0.72rem;
+  text-transform:none;
+  letter-spacing:0;
+}
+.stream-settings-card.is-disabled .stream-partial-control{
+  opacity:0.55;
+}
+.stream-help{
+  font-size:0.75rem;
+  color:var(--text-muted);
+  line-height:1.5;
+}
 
 /* Spinner */
 .spinner{
@@ -1518,6 +1560,28 @@ select:hover{
     </div>
 
     <div class="form-group">
+      <label>流式生成</label>
+      <div class="stream-settings-card" id="streamSettingsCard">
+        <label class="stream-toggle">
+          <input type="checkbox" id="streamImages" onchange="handleStreamImagesChange(this.checked)">
+          <span>启用流式生成</span>
+        </label>
+        <div class="stream-partial-control">
+          <label for="streamPartialImages">请求中间步骤图像数 partial_images</label>
+          <select id="streamPartialImages" onchange="handleStreamPartialImagesChange(this.value)">
+            <option value="0">0，不请求</option>
+            <option value="1">1 张</option>
+            <option value="2">2 张</option>
+            <option value="3">3 张</option>
+          </select>
+        </div>
+        <div class="stream-help">
+          0 不请求中间图，长时间生成时更容易断开；2/3 更适合慢接口或大尺寸图，但可能产生额外计费。
+        </div>
+      </div>
+    </div>
+
+    <div class="form-group">
       <label>Prompt</label>
       <textarea id="prompt" placeholder="描述你想生成的图片...&#10;例如: A cyberpunk city at sunset with neon lights reflecting on wet streets" onpaste="handlePaste(event)"></textarea>
     </div>
@@ -1793,7 +1857,7 @@ const APP_VERSION = '2.1';
 const APP_VERSION_DATE = '2026-05-10';
 
 // API endpoints configuration
-const API_BASE_URL = 'https://image.shoestravel.xin';
+const API_BASE_URL = 'https://api2.shoestravel.xin';
 const API_ENDPOINTS = [
   {
     url: `${API_BASE_URL}/v1/images/generations`,
@@ -1813,6 +1877,10 @@ let editingEndpointId = null; // For editing existing custom endpoint
 let localSaveDirectoryHandle = null;
 let autoLocalSaveEnabled = false;
 let localSavePath = 'generated-images';
+const DEFAULT_STREAM_IMAGES = true;
+const DEFAULT_STREAM_PARTIAL_IMAGES = 2;
+let streamImagesEnabled = DEFAULT_STREAM_IMAGES;
+let streamPartialImages = DEFAULT_STREAM_PARTIAL_IMAGES;
 
 // Task Queue System
 let taskIdCounter = 0;
@@ -1864,7 +1932,7 @@ function getConfig(key) {
     const tx = db.transaction([STORE_CONFIG], 'readonly');
     const store = tx.objectStore(STORE_CONFIG);
     const request = store.get(key);
-    request.onsuccess = () => resolve(request.result?.value || null);
+    request.onsuccess = () => resolve(request.result ? request.result.value : null);
     request.onerror = () => reject(request.error);
   });
 }
@@ -3077,6 +3145,58 @@ async function handleApiTypeChange() {
   log(`切换接口类型: ${currentApiType === 'images_generations' ? 'Images Generations' : currentApiType === 'responses' ? 'Responses API' : 'Chat Completions'}`, 'success');
 }
 
+function normalizeStreamPartialImages(value, fallback = DEFAULT_STREAM_PARTIAL_IMAGES) {
+  if (value == null || value === '') return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(0, Math.min(3, Math.round(number)));
+}
+
+function getCurrentStreamOptions() {
+  return {
+    streamImages: streamImagesEnabled === true,
+    streamPartialImages: normalizeStreamPartialImages(streamPartialImages)
+  };
+}
+
+function updateStreamSettingsUi() {
+  const streamCheckbox = document.getElementById('streamImages');
+  const partialSelect = document.getElementById('streamPartialImages');
+  const card = document.getElementById('streamSettingsCard');
+
+  if (streamCheckbox) streamCheckbox.checked = streamImagesEnabled === true;
+  if (partialSelect) {
+    partialSelect.value = String(normalizeStreamPartialImages(streamPartialImages));
+    partialSelect.disabled = streamImagesEnabled !== true;
+  }
+  if (card) card.classList.toggle('is-disabled', streamImagesEnabled !== true);
+}
+
+async function loadStreamSettings() {
+  const savedStreamImages = await getConfig('streamImages');
+  const savedPartialImages = await getConfig('streamPartialImages');
+
+  streamImagesEnabled = typeof savedStreamImages === 'boolean'
+    ? savedStreamImages
+    : DEFAULT_STREAM_IMAGES;
+  streamPartialImages = normalizeStreamPartialImages(savedPartialImages, DEFAULT_STREAM_PARTIAL_IMAGES);
+  updateStreamSettingsUi();
+}
+
+async function handleStreamImagesChange(enabled) {
+  streamImagesEnabled = enabled === true;
+  await setConfig('streamImages', streamImagesEnabled);
+  updateStreamSettingsUi();
+  log(`流式生成已${streamImagesEnabled ? '开启' : '关闭'}`, streamImagesEnabled ? 'success' : 'warning');
+}
+
+async function handleStreamPartialImagesChange(value) {
+  streamPartialImages = normalizeStreamPartialImages(value);
+  await setConfig('streamPartialImages', streamPartialImages);
+  updateStreamSettingsUi();
+  log(`partial_images 已设置为 ${streamPartialImages}`, 'info');
+}
+
 function updateApiTypeHint() {
   const hint = document.getElementById('apiTypeHint');
   const isDefaultEndpoint = !currentEndpoint?.isCustom;
@@ -3368,7 +3488,8 @@ async function generate() {
     refImages: [...refImages],
     endpoint: currentEndpoint,
     apiKey,
-    apiType: currentApiType
+    apiType: currentApiType,
+    streamOptions: getCurrentStreamOptions()
   });
 
   showToast(`任务 #${task.id} 已添加到队列`);
@@ -3376,7 +3497,8 @@ async function generate() {
   const actualApiType = !currentEndpoint.isCustom
     ? (refImages.length > 0 ? 'images_edit' : 'images_generations')
     : currentApiType;
-  log(`任务 #${task.id}: Prompt="${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}", 数量=${count}, 并发=${concurrency}, 接口=${actualApiType}`, 'info');
+  const currentStreamOptions = task.params.streamOptions || getCurrentStreamOptions();
+  log(`任务 #${task.id}: Prompt="${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}", 数量=${count}, 并发=${concurrency}, 接口=${actualApiType}, 流式=${currentStreamOptions.streamImages ? `开启(partial_images=${currentStreamOptions.streamPartialImages})` : '关闭'}`, 'info');
 
   // Start thread pool if not running
   if (!globalThreadPool) {
@@ -3516,8 +3638,6 @@ function finalizeTask(task) {
     log(`任务 #${task.id} 失败: 0/${total} 成功`, 'error');
   }
 }
-
-const STREAM_PARTIAL_IMAGE_COUNT = 2;
 
 function base64ToImageSrc(value) {
   if (typeof value !== 'string') return null;
@@ -3672,21 +3792,25 @@ function tryParseJson(text) {
   }
 }
 
-function enableStreamingRequest(body, taskApiType) {
+function enableStreamingRequest(body, taskApiType, streamOptions = getCurrentStreamOptions()) {
   const marks = {
     enabled: false,
     addedStream: false,
     addedPartialImages: false,
     partialImagesTool: null
   };
+  const shouldStream = streamOptions?.streamImages === true;
+  const partialImages = normalizeStreamPartialImages(streamOptions?.streamPartialImages, DEFAULT_STREAM_PARTIAL_IMAGES);
+
+  if (!shouldStream) return marks;
 
   if (body instanceof FormData) {
     if (!body.has('stream')) {
       body.set('stream', 'true');
       marks.addedStream = true;
     }
-    if (!body.has('partial_images')) {
-      body.set('partial_images', String(STREAM_PARTIAL_IMAGE_COUNT));
+    if (partialImages > 0 && !body.has('partial_images')) {
+      body.set('partial_images', String(partialImages));
       marks.addedPartialImages = true;
     }
     marks.enabled = true;
@@ -3700,36 +3824,21 @@ function enableStreamingRequest(body, taskApiType) {
     marks.addedStream = true;
   }
 
-  if (taskApiType === 'images_generations' && body.partial_images == null) {
-    body.partial_images = STREAM_PARTIAL_IMAGE_COUNT;
+  if (taskApiType === 'images_generations' && partialImages > 0 && body.partial_images == null) {
+    body.partial_images = partialImages;
     marks.addedPartialImages = true;
   }
 
-  if (taskApiType === 'responses' && Array.isArray(body.tools)) {
+  if (taskApiType === 'responses' && partialImages > 0 && Array.isArray(body.tools)) {
     const imageTool = body.tools.find(tool => tool?.type === 'image_generation');
     if (imageTool && imageTool.partial_images == null) {
-      imageTool.partial_images = STREAM_PARTIAL_IMAGE_COUNT;
+      imageTool.partial_images = partialImages;
       marks.partialImagesTool = imageTool;
     }
   }
 
   marks.enabled = true;
   return marks;
-}
-
-function disableStreamingRequest(body, marks) {
-  if (!marks?.enabled) return;
-
-  if (body instanceof FormData) {
-    if (marks.addedStream) body.delete('stream');
-    if (marks.addedPartialImages) body.delete('partial_images');
-    return;
-  }
-
-  if (!body || typeof body !== 'object') return;
-  if (marks.addedStream) delete body.stream;
-  if (marks.addedPartialImages) delete body.partial_images;
-  if (marks.partialImagesTool) delete marks.partialImagesTool.partial_images;
 }
 
 function getStreamingHeaders(headers) {
@@ -3751,12 +3860,6 @@ async function readResponseBody(res) {
 
 function getResponseErrorMessage(data) {
   return data?.error?.message || data?.message || data?.statusText || '';
-}
-
-function shouldRetryWithoutStreaming(status, errorData) {
-  if (![400, 406, 415, 422].includes(status)) return false;
-  const text = JSON.stringify(errorData || {}).toLowerCase();
-  return text.includes('stream') || text.includes('partial_images') || text.includes('partial image');
 }
 
 async function readImageStreamResponse(res, taskApiType, hooks = {}) {
@@ -3963,6 +4066,7 @@ async function makeRequestForTask(task, requestIndex, displayIndex) {
   }
 
   const { size, quality, moderation, refImages, endpoint, apiKey, apiType } = task.params;
+  const streamOptions = task.params.streamOptions || getCurrentStreamOptions();
   // 默认线路强制使用 generations/edit 接口，有参考图时用 edit
   let taskApiType = apiType || currentApiType;
   if (!endpoint.isCustom) {
@@ -4080,44 +4184,19 @@ async function makeRequestForTask(task, requestIndex, displayIndex) {
       }
     }
 
-    const streamMarks = enableStreamingRequest(requestBody, taskApiType);
-    log(`任务 #${task.id} 请求 #${displayIndex}: 已启用流式生成`, 'info');
+    const streamMarks = enableStreamingRequest(requestBody, taskApiType, streamOptions);
+    if (streamMarks.enabled) {
+      log(`任务 #${task.id} 请求 #${displayIndex}: 已启用流式生成，partial_images=${normalizeStreamPartialImages(streamOptions.streamPartialImages)}`, 'info');
+    } else {
+      log(`任务 #${task.id} 请求 #${displayIndex}: 使用普通请求（流式已关闭）`, 'info');
+    }
 
-    let res = await fetch(requestUrl, {
+    const res = await fetch(requestUrl, {
       method: 'POST',
       headers: streamMarks.enabled ? getStreamingHeaders(requestHeaders) : requestHeaders,
       body: requestBody instanceof FormData ? requestBody : JSON.stringify(requestBody),
       signal: task.abortController.signal
     });
-
-    if (!res.ok) {
-      const errorData = await readResponseBody(res);
-      if (streamMarks.enabled && shouldRetryWithoutStreaming(res.status, errorData)) {
-        disableStreamingRequest(requestBody, streamMarks);
-        log(`任务 #${task.id} 请求 #${displayIndex}: 接口拒绝流式参数，回退普通请求保持原功能`, 'warning');
-        res = await fetch(requestUrl, {
-          method: 'POST',
-          headers: requestHeaders,
-          body: requestBody instanceof FormData ? requestBody : JSON.stringify(requestBody),
-          signal: task.abortController.signal
-        });
-      } else {
-        const errorDetail = getResponseErrorMessage(errorData);
-        log(`任务 #${task.id} 请求 #${displayIndex}: HTTP ${res.status} ${errorDetail}`, 'error');
-        showParseErrorModal({
-          taskId: task.id,
-          requestIndex: displayIndex,
-          requestUrl,
-          requestBody: serializeRequestBodyForDebug(requestBody),
-          responseBody: errorData || {
-            status: res.status,
-            statusText: res.statusText,
-            message: errorDetail || 'HTTP 请求失败'
-          }
-        });
-        return { success: false };
-      }
-    }
 
     if (!res.ok) {
       const errorData = await readResponseBody(res);
@@ -4137,21 +4216,32 @@ async function makeRequestForTask(task, requestIndex, displayIndex) {
       return { success: false };
     }
 
-    let lastPreviewAt = 0;
-    const payload = await readImageStreamResponse(res, taskApiType, {
-      onPartialImage: (src, meta) => {
-        const now = Date.now();
-        if (now - lastPreviewAt > 500) {
-          showStreamingPreview(src, displayIndex, task.id, '流式预览');
-          lastPreviewAt = now;
+    let payload = null;
+    if (streamMarks.enabled) {
+      let lastPreviewAt = 0;
+      payload = await readImageStreamResponse(res, taskApiType, {
+        onPartialImage: (src, meta) => {
+          const now = Date.now();
+          if (now - lastPreviewAt > 500) {
+            showStreamingPreview(src, displayIndex, task.id, '流式预览');
+            lastPreviewAt = now;
+          }
+          log(`任务 #${task.id} 请求 #${displayIndex}: 收到 ${meta.eventType || 'partial_image'} 事件 #${meta.eventCount}`, 'info');
+        },
+        onFinalImage: (src, meta) => {
+          showStreamingPreview(src, displayIndex, task.id, '最终图');
+          log(`任务 #${task.id} 请求 #${displayIndex}: 收到 ${meta.eventType || 'completed'} 事件 #${meta.eventCount}`, 'success');
         }
-        log(`任务 #${task.id} 请求 #${displayIndex}: 收到 ${meta.eventType || 'partial_image'} 事件 #${meta.eventCount}`, 'info');
-      },
-      onFinalImage: (src, meta) => {
-        showStreamingPreview(src, displayIndex, task.id, '最终图');
-        log(`任务 #${task.id} 请求 #${displayIndex}: 收到 ${meta.eventType || 'completed'} 事件 #${meta.eventCount}`, 'success');
-      }
-    });
+      });
+    } else {
+      const data = await readResponseBody(res);
+      payload = {
+        data,
+        imageSrc: parseImageSourceFromObject(data, taskApiType),
+        isStream: false,
+        eventCount: 0
+      };
+    }
 
     const data = payload.data;
     if (payload.isStream) {
@@ -4923,6 +5013,7 @@ if (isLocalDirectoryPickerBridgeMode()) {
     await initTheme();
     await loadApiKey();
     await loadApiType();
+    await loadStreamSettings();
     await loadCustomEndpoints();
     await initLocalSaveSettings();
     renderCustomEndpointList();
