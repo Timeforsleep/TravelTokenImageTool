@@ -131,7 +131,8 @@ body{
   min-height:100vh;
 }
 @media(max-width:1000px){
-  .app{grid-template-columns:1fr;padding:16px;gap:20px}
+  .app{grid-template-columns:minmax(0,1fr);max-width:760px;padding:16px;gap:20px}
+  .panel{position:relative;top:auto}
 }
 
 /* Panel styling */
@@ -181,7 +182,7 @@ body{
   display:flex;
   align-items:center;
   gap:10px;
-  letter-spacing:-0.02em;
+  letter-spacing:0;
 }
 .panel h1::before{
   content:'';
@@ -1484,6 +1485,269 @@ select:hover{
   font-size:0.7rem;
   color:var(--text-muted);
 }
+
+/* Portrait/mobile layout */
+@media(max-width:1000px){
+  .panel{
+    position:relative;
+    top:auto;
+  }
+}
+
+@media(orientation:portrait) and (max-width:900px){
+  body{min-height:100svh}
+  .app{min-height:100svh}
+  .panel,.output-area,.history-section,.task-queue-section{
+    border-radius:18px;
+  }
+  .current-image{max-height:62svh}
+  .masonry-grid{
+    max-height:none;
+    overflow:visible;
+    padding-right:0;
+  }
+}
+
+@media(max-width:640px){
+  .grid-overlay{background-size:42px 42px}
+  .app{
+    padding:12px;
+    gap:16px;
+  }
+  .panel,.output-area,.history-section,.task-queue-section{
+    padding:18px;
+    gap:16px;
+    border-radius:16px;
+  }
+  .panel::before,.output-area::before,.history-section::before,.task-queue-section::before{
+    border-radius:16px;
+  }
+  .panel-header,.output-header,.history-header,.log-header{
+    align-items:flex-start;
+    flex-wrap:wrap;
+  }
+  .panel h1{
+    font-size:1.25rem;
+    line-height:1.2;
+  }
+  .copyright{
+    margin-left:20px;
+  }
+  input,textarea,select{
+    padding:12px 14px;
+    border-radius:10px;
+    font-size:0.92rem;
+  }
+  textarea{
+    min-height:132px;
+  }
+  .btn{
+    min-height:48px;
+    padding:13px 16px;
+    border-radius:12px;
+  }
+  .local-save-actions button{
+    flex:1 1 130px;
+    min-height:38px;
+  }
+  .ref-upload-btn{
+    min-height:72px;
+    padding:18px 12px;
+  }
+  .ref-preview-item{
+    width:56px;
+    height:56px;
+  }
+  .current-image-area{
+    min-height:220px;
+    border-radius:12px;
+  }
+  .current-image{
+    max-height:58svh;
+  }
+  .placeholder{
+    padding:48px 20px;
+  }
+  .placeholder svg{
+    width:64px;
+    height:64px;
+  }
+  .placeholder p{
+    font-size:0.9rem;
+  }
+  .current-actions{
+    position:static;
+    opacity:1;
+    width:100%;
+    padding:12px;
+    flex-wrap:wrap;
+    background:rgba(0,0,0,0.55);
+  }
+  .current-actions button{
+    flex:1 1 120px;
+    min-height:40px;
+    padding:9px 12px;
+  }
+  .history-list,.task-queue-container,.log-list,.custom-endpoint-list{
+    max-height:42svh;
+  }
+  .masonry-grid{
+    gap:10px;
+  }
+  .masonry-column{
+    gap:10px;
+  }
+  .masonry-item{
+    border-radius:10px;
+  }
+  .masonry-item img{
+    border-radius:10px;
+  }
+  .lightbox{
+    padding:12px;
+  }
+  .lightbox img{
+    max-width:calc(100vw - 24px);
+    max-height:calc(100svh - 120px);
+    border-radius:12px;
+  }
+  .lb-actions{
+    left:12px;
+    right:12px;
+    bottom:max(12px,env(safe-area-inset-bottom));
+    gap:8px;
+  }
+  .lb-actions button{
+    flex:1;
+    min-width:0;
+    padding:12px 8px;
+    font-size:0.82rem;
+    white-space:nowrap;
+  }
+  .modal-overlay{
+    align-items:flex-start;
+    overflow-y:auto;
+    padding:12px;
+  }
+  .modal{
+    width:100%;
+    max-height:calc(100svh - 24px);
+    overflow-y:auto;
+    padding:20px;
+    border-radius:16px;
+  }
+  .modal .modal-actions{
+    gap:10px;
+  }
+  .toast{
+    left:12px;
+    right:12px;
+    bottom:max(16px,env(safe-area-inset-bottom));
+    text-align:center;
+    transform:translateY(100px);
+  }
+  .toast.show{
+    transform:translateY(0);
+  }
+  .custom-endpoint-item{
+    align-items:flex-start;
+    flex-wrap:wrap;
+  }
+  .custom-endpoint-item .ep-actions{
+    width:100%;
+    justify-content:flex-end;
+  }
+  .task-header{
+    flex-wrap:wrap;
+  }
+  .task-actions{
+    margin-left:0;
+    width:100%;
+    justify-content:flex-end;
+  }
+}
+
+@media(max-width:480px){
+  .app{
+    padding:10px;
+    gap:12px;
+  }
+  .panel,.output-area,.history-section,.task-queue-section{
+    padding:14px;
+    border-radius:14px;
+  }
+  .panel::before,.output-area::before,.history-section::before,.task-queue-section::before{
+    border-radius:14px;
+  }
+  .panel-header{
+    gap:12px;
+  }
+  .theme-toggle{
+    flex:0 0 auto;
+  }
+  .row{
+    grid-template-columns:1fr;
+    gap:12px;
+  }
+  #customSizeInputs > div{
+    flex-direction:column;
+  }
+  .endpoint-select-wrap{
+    flex-wrap:wrap;
+  }
+  .refresh-endpoint{
+    min-height:40px;
+  }
+  .log-actions{
+    width:100%;
+  }
+  .log-copy,.log-clear{
+    flex:1;
+    min-height:34px;
+  }
+  .history-header .clear-btn{
+    min-height:34px;
+  }
+  .output-header{
+    gap:8px;
+  }
+  .output-header h2{
+    font-size:1rem;
+  }
+  .current-image-area{
+    min-height:190px;
+  }
+  .current-actions{
+    flex-direction:column;
+  }
+  .current-actions button{
+    width:100%;
+  }
+  .masonry-grid{
+    display:block;
+  }
+  .masonry-column + .masonry-column{
+    margin-top:10px;
+  }
+  .lb-actions{
+    flex-direction:column;
+  }
+  .modal .modal-actions{
+    flex-direction:column;
+  }
+}
+
+@media(hover:none) and (pointer:coarse){
+  .masonry-item .overlay,.masonry-item .info,.masonry-item .delete-btn{
+    opacity:1;
+  }
+  .masonry-item .info{
+    transform:none;
+  }
+  .ref-preview-item .ref-delete{
+    opacity:1;
+  }
+}
 </style>
 <script>
 (() => {
@@ -1881,6 +2145,8 @@ const DEFAULT_STREAM_IMAGES = true;
 const DEFAULT_STREAM_PARTIAL_IMAGES = 2;
 let streamImagesEnabled = DEFAULT_STREAM_IMAGES;
 let streamPartialImages = DEFAULT_STREAM_PARTIAL_IMAGES;
+let historyColumnCount = null;
+let historyResizeTimer = null;
 
 // Task Queue System
 let taskIdCounter = 0;
@@ -4697,8 +4963,8 @@ async function renderHistory() {
         });
       });
 
-      // Fixed 3 columns for left-right waterfall
-      const numCols = 3;
+      const numCols = getHistoryColumnCount();
+      historyColumnCount = numCols;
 
       // Create columns for left-right waterfall
       const columns = new Array(numCols).fill(0); // Track column heights
@@ -4775,6 +5041,25 @@ async function renderHistory() {
     log('渲染历史记录异常: ' + e.message, 'error');
     grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger);font-size:0.85rem">渲染异常</div>';
   }
+}
+
+function getHistoryColumnCount() {
+  const width = window.innerWidth || document.documentElement.clientWidth || 1024;
+  const isPortrait = window.matchMedia?.('(orientation: portrait)').matches;
+  if (width <= 480) return 1;
+  if (width <= 640 || (width <= 900 && isPortrait)) return 2;
+  return 3;
+}
+
+function handleHistoryResize() {
+  clearTimeout(historyResizeTimer);
+  historyResizeTimer = setTimeout(() => {
+    const nextColumnCount = getHistoryColumnCount();
+    if (historyColumnCount !== null && nextColumnCount !== historyColumnCount && db) {
+      renderHistory();
+    }
+    historyColumnCount = nextColumnCount;
+  }, 160);
 }
 
 async function loadHistoryImage(src, historyId) {
@@ -5019,6 +5304,8 @@ if (isLocalDirectoryPickerBridgeMode()) {
     renderCustomEndpointList();
     await testAllEndpoints(true); // 启动时测试固定接口
     await renderHistory();
+    window.addEventListener('resize', handleHistoryResize);
+    window.addEventListener('orientationchange', handleHistoryResize);
     log('系统就绪', 'success');
   }).catch((e) => {
     log('系统初始化失败: ' + e.message, 'error');
