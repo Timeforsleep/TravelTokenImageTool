@@ -2121,7 +2121,7 @@ const APP_VERSION = '2.1';
 const APP_VERSION_DATE = '2026-05-10';
 
 // API endpoints configuration
-const API_BASE_URL = 'https://api2.shoestravel.xin';
+const API_BASE_URL = 'https://code.shoestravel.xin';
 const API_ENDPOINTS = [
   {
     url: `${API_BASE_URL}/v1/images/generations`,
@@ -4114,39 +4114,30 @@ function getStreamingHeaders(headers) {
   };
 }
 
-async function readResponseBody(res) {
-  const text = await res.text();
+function parseResponseTextBody(text, status, statusText) {
   const parsed = tryParseJson(text.trim());
   return parsed.ok ? parsed.value : {
-    status: res.status,
-    statusText: res.statusText,
+    status,
+    statusText,
     message: text || 'HTTP 请求失败'
   };
+}
+
+async function readResponseBody(res) {
+  const text = await res.text();
+  return parseResponseTextBody(text, res.status, res.statusText);
 }
 
 function getResponseErrorMessage(data) {
   return data?.error?.message || data?.message || data?.statusText || '';
 }
 
-async function readImageStreamResponse(res, taskApiType, hooks = {}) {
-  const contentType = (res.headers.get('content-type') || '').toLowerCase();
-  const streamLikeContentType =
-    contentType.includes('text/event-stream') ||
-    contentType.includes('application/x-ndjson') ||
-    contentType.includes('application/json-seq');
+function isMobileLikeBrowser() {
+  const ua = navigator.userAgent || '';
+  return /Android|iPhone|iPad|iPod|Mobile|MicroMessenger|MQQBrowser|CriOS|FxiOS/i.test(ua);
+}
 
-  if (!res.body || typeof res.body.getReader !== 'function') {
-    const data = await readResponseBody(res);
-    return {
-      data,
-      imageSrc: parseImageSourceFromObject(data, taskApiType),
-      isStream: false,
-      eventCount: 0
-    };
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
+function createImageStreamParser(taskApiType, hooks = {}, streamLikeContentType = true) {
   const events = [];
   let rawText = '';
   let lineBuffer = '';
@@ -4257,57 +4248,192 @@ async function readImageStreamResponse(res, taskApiType, hooks = {}) {
     }
   }
 
+  function append(chunk) {
+    if (!chunk || shouldStop) return shouldStop;
+
+    rawText += chunk;
+    lineBuffer += chunk;
+
+    let newlineIndex = lineBuffer.search(/\r?\n/);
+    while (newlineIndex >= 0) {
+      const line = lineBuffer.slice(0, newlineIndex);
+      const newlineLength = lineBuffer[newlineIndex] === '\r' && lineBuffer[newlineIndex + 1] === '\n' ? 2 : 1;
+      lineBuffer = lineBuffer.slice(newlineIndex + newlineLength);
+      processLine(line);
+      if (shouldStop) break;
+      newlineIndex = lineBuffer.search(/\r?\n/);
+    }
+
+    return shouldStop;
+  }
+
+  function finish() {
+    if (!shouldStop && lineBuffer) processLine(lineBuffer);
+    if (!shouldStop) flushSseEvent();
+
+    const parsedWhole = tryParseJson(rawText.trim());
+    const data = streamError
+      ? { error: streamError }
+      : parsedWhole.ok
+        ? parsedWhole.value
+        : events[events.length - 1] || rawText.trim();
+    const finalFromData = data && typeof data === 'object'
+      ? parseFinalImageFromEvent(data, taskApiType)
+      : parseImageSourceFromObject(data, taskApiType);
+    const imageSrc = finalImageSrc || finalFromData;
+
+    return {
+      data,
+      imageSrc,
+      isStream: sawSse || streamLikeContentType || events.length > 0,
+      eventCount: events.length
+    };
+  }
+
+  return { append, finish };
+}
+
+async function readImageStreamResponse(res, taskApiType, hooks = {}) {
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  const streamLikeContentType =
+    contentType.includes('text/event-stream') ||
+    contentType.includes('application/x-ndjson') ||
+    contentType.includes('application/json-seq');
+
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    const data = await readResponseBody(res);
+    return {
+      data,
+      imageSrc: parseImageSourceFromObject(data, taskApiType),
+      isStream: false,
+      eventCount: 0
+    };
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = createImageStreamParser(taskApiType, hooks, streamLikeContentType);
+  let streamReadError = null;
+
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
 
       const chunk = decoder.decode(value, { stream: true });
-      rawText += chunk;
-      lineBuffer += chunk;
-
-      let newlineIndex = lineBuffer.search(/\r?\n/);
-      while (newlineIndex >= 0) {
-        const line = lineBuffer.slice(0, newlineIndex);
-        const newlineLength = lineBuffer[newlineIndex] === '\r' && lineBuffer[newlineIndex + 1] === '\n' ? 2 : 1;
-        lineBuffer = lineBuffer.slice(newlineIndex + newlineLength);
-        processLine(line);
-        if (shouldStop) break;
-        newlineIndex = lineBuffer.search(/\r?\n/);
-      }
-
-      if (shouldStop) {
-        await reader.cancel();
-        break;
-      }
+      if (parser.append(chunk)) break;
     }
+  } catch (e) {
+    streamReadError = e;
   } finally {
     const tail = decoder.decode();
-    if (tail) {
-      rawText += tail;
-      lineBuffer += tail;
+    if (tail) parser.append(tail);
+    try {
+      reader.releaseLock?.();
+    } catch (e) {
+      // Some mobile browsers throw while releasing a completed stream lock.
     }
   }
 
-  if (!shouldStop && lineBuffer) processLine(lineBuffer);
-  if (!shouldStop) flushSseEvent();
+  const payload = parser.finish();
 
-  const parsedWhole = tryParseJson(rawText.trim());
-  const data = streamError
-    ? { error: streamError }
-    : parsedWhole.ok
-      ? parsedWhole.value
-      : events[events.length - 1] || rawText.trim();
-  const finalFromData = data && typeof data === 'object'
-    ? parseFinalImageFromEvent(data, taskApiType)
-    : parseImageSourceFromObject(data, taskApiType);
+  if (streamReadError && !payload.imageSrc) {
+    throw streamReadError;
+  }
 
   return {
-    data,
-    imageSrc: finalImageSrc || finalFromData,
-    isStream: sawSse || streamLikeContentType || events.length > 0,
-    eventCount: events.length
+    ...payload,
+    streamReadError
   };
+}
+
+function requestImageStreamWithXhr(requestUrl, requestHeaders, requestBody, taskApiType, signal, hooks = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const parser = createImageStreamParser(taskApiType, hooks, true);
+    let seenLength = 0;
+    let settled = false;
+
+    function cleanup() {
+      signal?.removeEventListener?.('abort', abortRequest);
+    }
+
+    function finishWithError(error) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    }
+
+    function finishWithValue(value) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    }
+
+    function abortRequest() {
+      xhr.abort();
+      const error = new Error('请求已取消');
+      error.name = 'AbortError';
+      finishWithError(error);
+    }
+
+    function appendAvailableText() {
+      const text = xhr.responseText || '';
+      if (text.length <= seenLength) return;
+      const chunk = text.slice(seenLength);
+      seenLength = text.length;
+      parser.append(chunk);
+    }
+
+    if (signal?.aborted) {
+      abortRequest();
+      return;
+    }
+
+    signal?.addEventListener?.('abort', abortRequest, { once: true });
+
+    xhr.open('POST', requestUrl, true);
+    Object.entries(requestHeaders || {}).forEach(([key, value]) => {
+      if (value != null) xhr.setRequestHeader(key, value);
+    });
+
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState >= 3) appendAvailableText();
+    };
+    xhr.onprogress = appendAvailableText;
+    xhr.onload = () => {
+      appendAvailableText();
+      const payload = parser.finish();
+      if (xhr.status >= 200 && xhr.status < 300) {
+        finishWithValue({
+          ok: true,
+          status: xhr.status,
+          statusText: xhr.statusText,
+          payload
+        });
+        return;
+      }
+
+      finishWithValue({
+        ok: false,
+        status: xhr.status,
+        statusText: xhr.statusText,
+        errorData: parseResponseTextBody(xhr.responseText || '', xhr.status, xhr.statusText)
+      });
+    };
+    xhr.onerror = () => {
+      const error = new TypeError('XMLHttpRequest 流式请求失败');
+      finishWithError(error);
+    };
+    xhr.ontimeout = () => {
+      const error = new TypeError('XMLHttpRequest 流式请求超时');
+      finishWithError(error);
+    };
+
+    xhr.send(requestBody instanceof FormData ? requestBody : JSON.stringify(requestBody));
+  });
 }
 
 async function finalizeImageSource(imageSrc, task, displayIndex) {
@@ -4457,35 +4583,9 @@ async function makeRequestForTask(task, requestIndex, displayIndex) {
       log(`任务 #${task.id} 请求 #${displayIndex}: 使用普通请求（流式已关闭）`, 'info');
     }
 
-    const res = await fetch(requestUrl, {
-      method: 'POST',
-      headers: streamMarks.enabled ? getStreamingHeaders(requestHeaders) : requestHeaders,
-      body: requestBody instanceof FormData ? requestBody : JSON.stringify(requestBody),
-      signal: task.abortController.signal
-    });
-
-    if (!res.ok) {
-      const errorData = await readResponseBody(res);
-      const errorDetail = getResponseErrorMessage(errorData);
-      log(`任务 #${task.id} 请求 #${displayIndex}: HTTP ${res.status} ${errorDetail}`, 'error');
-      showParseErrorModal({
-        taskId: task.id,
-        requestIndex: displayIndex,
-        requestUrl,
-        requestBody: serializeRequestBodyForDebug(requestBody),
-        responseBody: errorData || {
-          status: res.status,
-          statusText: res.statusText,
-          message: errorDetail || 'HTTP 请求失败'
-        }
-      });
-      return { success: false };
-    }
-
-    let payload = null;
-    if (streamMarks.enabled) {
+    const createStreamHooks = () => {
       let lastPreviewAt = 0;
-      payload = await readImageStreamResponse(res, taskApiType, {
+      return {
         onPartialImage: (src, meta) => {
           const now = Date.now();
           if (now - lastPreviewAt > 500) {
@@ -4498,20 +4598,88 @@ async function makeRequestForTask(task, requestIndex, displayIndex) {
           showStreamingPreview(src, displayIndex, task.id, '最终图');
           log(`任务 #${task.id} 请求 #${displayIndex}: 收到 ${meta.eventType || 'completed'} 事件 #${meta.eventCount}`, 'success');
         }
-      });
-    } else {
-      const data = await readResponseBody(res);
-      payload = {
-        data,
-        imageSrc: parseImageSourceFromObject(data, taskApiType),
-        isStream: false,
-        eventCount: 0
       };
+    };
+
+    let payload = null;
+
+    if (streamMarks.enabled && isMobileLikeBrowser()) {
+      log(`任务 #${task.id} 请求 #${displayIndex}: 手机端使用 XHR 流式通道`, 'info');
+      const xhrResult = await requestImageStreamWithXhr(
+        requestUrl,
+        getStreamingHeaders(requestHeaders),
+        requestBody,
+        taskApiType,
+        task.abortController.signal,
+        createStreamHooks()
+      );
+
+      if (!xhrResult.ok) {
+        const errorDetail = getResponseErrorMessage(xhrResult.errorData);
+        log(`任务 #${task.id} 请求 #${displayIndex}: HTTP ${xhrResult.status} ${errorDetail}`, 'error');
+        showParseErrorModal({
+          taskId: task.id,
+          requestIndex: displayIndex,
+          requestUrl,
+          requestBody: serializeRequestBodyForDebug(requestBody),
+          responseBody: xhrResult.errorData || {
+            status: xhrResult.status,
+            statusText: xhrResult.statusText,
+            message: errorDetail || 'HTTP 请求失败'
+          }
+        });
+        return { success: false };
+      }
+
+      payload = {
+        ...xhrResult.payload,
+        streamTransport: 'xhr'
+      };
+    } else {
+      const res = await fetch(requestUrl, {
+        method: 'POST',
+        headers: streamMarks.enabled ? getStreamingHeaders(requestHeaders) : requestHeaders,
+        body: requestBody instanceof FormData ? requestBody : JSON.stringify(requestBody),
+        signal: task.abortController.signal
+      });
+
+      if (!res.ok) {
+        const errorData = await readResponseBody(res);
+        const errorDetail = getResponseErrorMessage(errorData);
+        log(`任务 #${task.id} 请求 #${displayIndex}: HTTP ${res.status} ${errorDetail}`, 'error');
+        showParseErrorModal({
+          taskId: task.id,
+          requestIndex: displayIndex,
+          requestUrl,
+          requestBody: serializeRequestBodyForDebug(requestBody),
+          responseBody: errorData || {
+            status: res.status,
+            statusText: res.statusText,
+            message: errorDetail || 'HTTP 请求失败'
+          }
+        });
+        return { success: false };
+      }
+
+      if (streamMarks.enabled) {
+        payload = await readImageStreamResponse(res, taskApiType, createStreamHooks());
+      } else {
+        const data = await readResponseBody(res);
+        payload = {
+          data,
+          imageSrc: parseImageSourceFromObject(data, taskApiType),
+          isStream: false,
+          eventCount: 0
+        };
+      }
     }
 
     const data = payload.data;
     if (payload.isStream) {
       log(`任务 #${task.id} 请求 #${displayIndex}: 流式读取完成，共 ${payload.eventCount} 个事件`, 'success');
+    }
+    if (payload.streamReadError) {
+      log(`任务 #${task.id} 请求 #${displayIndex}: 流式收尾出现 ${payload.streamReadError.name}，已使用已接收的最终图片继续`, 'warning');
     }
 
     if (data?.error) {
@@ -4542,6 +4710,8 @@ async function makeRequestForTask(task, requestIndex, displayIndex) {
       return { success: false, cancelled: true };
     }
 
+    const isLikelyMobileStreamError = streamOptions?.streamImages === true && e.name === 'TypeError' && isMobileLikeBrowser();
+
     // 网络错误 - 弹窗显示完整请求信息 + 排查建议
     const errorInfo = {
       taskId: task.id,
@@ -4549,15 +4719,25 @@ async function makeRequestForTask(task, requestIndex, displayIndex) {
       requestUrl,
       requestBody: serializeRequestBodyForDebug(requestBody),
       responseBody: {
-        error: e.message,
+        error: isLikelyMobileStreamError
+          ? `手机浏览器流式连接失败：${e.message || 'TypeError'}`
+          : e.message,
         errorType: e.name,
-        suggestions: [
-          '1. 检查 API Key 是否正确',
-          '2. 检查固定接口地址是否可访问',
-          '3. 尝试在 Postman 中测试此请求',
-          '4. 检查浏览器控制台是否有 CORS 错误',
-          '5. 确认服务端已允许当前网页域名跨域请求'
-        ]
+        suggestions: isLikelyMobileStreamError
+          ? [
+            '1. 请用系统浏览器 Chrome/Safari 打开，尽量避免微信/QQ/内置浏览器',
+            '2. 确认页面和接口都使用 HTTPS，且接口允许当前页面域名跨域访问',
+            '3. 服务器需要保持 text/event-stream 或可逐行读取的响应，不要被 CDN/代理缓冲',
+            '4. 高清大图建议把并发数设为 1，避免手机网络切换或后台挂起中断长连接',
+            '5. 如果仍失败，请复制此弹窗内容，重点看请求 URL、errorType 和浏览器环境'
+          ]
+          : [
+            '1. 检查 API Key 是否正确',
+            '2. 检查固定接口地址是否可访问',
+            '3. 尝试在 Postman 中测试此请求',
+            '4. 检查浏览器控制台是否有 CORS 错误',
+            '5. 确认服务端已允许当前网页域名跨域请求'
+          ]
       }
     };
     log(`任务 #${task.id} 请求 #${displayIndex}: ${e.message} (${e.name})`, 'error');
