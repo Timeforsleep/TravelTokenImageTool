@@ -4108,10 +4108,7 @@ function enableStreamingRequest(body, taskApiType, streamOptions = getCurrentStr
 }
 
 function getStreamingHeaders(headers) {
-  return {
-    ...headers,
-    'Accept': 'text/event-stream, application/x-ndjson, application/json'
-  };
+  return { ...headers };
 }
 
 function parseResponseTextBody(text, status, statusText) {
@@ -4723,7 +4720,7 @@ async function makeRequestForTask(task, requestIndex, displayIndex) {
           ? [
             '1. 请用系统浏览器 Chrome/Safari/Edge 打开，尽量避免微信/QQ/内置浏览器',
             '2. 确认页面和接口都使用 HTTPS，且接口允许当前页面域名跨域访问',
-            '3. 服务器需要允许 OPTIONS 预检并放行 Authorization、Content-Type、Accept 请求头',
+            '3. 服务器需要允许 OPTIONS 预检并放行 Authorization、Content-Type 请求头',
             '4. 服务器需要保持 text/event-stream 或可逐行读取的响应，不要被 CDN/代理缓冲',
             '5. 高清大图建议把并发数设为 1，避免网络切换或后台挂起中断长连接'
           ]
